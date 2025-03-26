@@ -1,0 +1,31 @@
+{
+  "name": "puppygraph-mcp",
+  "version": "1.0.0",
+  "bin": {
+    "puppygraph-mcp": "./build/index.js"
+  },
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc && chmod 755 build/index.js",
+    "start": "node build/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Model Context Protocol (MCP) server for PuppyGraph, enabling graph database queries through Claude",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.7.0",
+    "gremlin": "^3.6.5",
+    "neo4j-driver": "^5.17.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "typescript": "^5.3.3"
+  }
+}
