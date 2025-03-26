@@ -1,6 +1,6 @@
 # PuppyGraph MCP Server
 
-Model Context Protocol (MCP) server for [PuppyGraph](https://puppygraph.com), allowing Claude to query graph databases using Gremlin and Cypher through Claude Desktop.
+Model Context Protocol (MCP) server for [PuppyGraph](https://puppygraph.com), allowing Claude to query the graph using Gremlin and Cypher through Claude Desktop.
 
 ## Features
 
@@ -51,7 +51,7 @@ PUPPYGRAPH_URL=bolt://your-neo4j-server:7687 PUPPYGRAPH_GREMLIN_URL=ws://your-gr
 
 ### Claude Desktop Configuration
 
-You can set up the MCP server in your Claude Desktop configuration and include environment variables directly in the config:
+You can set up the MCP server in your Claude Desktop configuration and OPTIONALLY include environment variables directly in the config:
 
 ```json
 {
@@ -109,42 +109,6 @@ Each tool is also available with an `mcp__` prefix (e.g., `mcp__puppygraph_query
 ### General Settings
 - Note: Fallback mode has been removed. The server will report actual connection errors to provide better transparency.
 
-## Example Queries
-
-### Cypher Queries
-
-Basic node exploration:
-```
-MATCH (n) RETURN n LIMIT 10
-```
-
-Finding related nodes:
-```
-MATCH (n)-[r]->(m) WHERE n.name = 'Alice' RETURN n, r, m
-```
-
-Count nodes by label:
-```
-MATCH (n) RETURN labels(n) as label, count(*) as count
-```
-
-### Gremlin Queries
-
-Basic vertex exploration:
-```
-g.V().limit(10)
-```
-
-Finding related vertices:
-```
-g.V().has('name', 'Alice').out().valueMap()
-```
-
-Count vertices by label:
-```
-g.V().groupCount().by(label)
-```
-
 ## Connection Troubleshooting
 
 This MCP server includes robust fallback mechanisms for handling various connection issues:
@@ -155,43 +119,6 @@ This MCP server includes robust fallback mechanisms for handling various connect
 4. If all direct connections fail, clear error messages will be reported
 
 Connection failures in one protocol won't prevent using another - for example, if Neo4j connection fails but Gremlin succeeds, you'll still be able to run Gremlin queries.
-
-### Remote Connection Instructions
-
-To connect to a remote PuppyGraph instance:
-
-#### 1. Neo4j (Cypher) Connection
-
-```bash
-PUPPYGRAPH_URL=bolt://your-neo4j-server:7687 \
-PUPPYGRAPH_USERNAME=neo4j \
-PUPPYGRAPH_PASSWORD=your-password \
-PUPPYGRAPH_DATABASE=your-database \
-npm start
-```
-
-#### 2. Gremlin Connection
-
-```bash
-PUPPYGRAPH_GREMLIN_URL=ws://your-gremlin-server:8182/gremlin \
-PUPPYGRAPH_GREMLIN_USERNAME=your-username \
-PUPPYGRAPH_GREMLIN_PASSWORD=your-password \
-PUPPYGRAPH_GREMLIN_TRAVERSAL_SOURCE=g \
-npm start
-```
-
-#### 3. Complete Remote Configuration
-
-```bash
-PUPPYGRAPH_URL=bolt://your-neo4j-server:7687 \
-PUPPYGRAPH_USERNAME=neo4j \
-PUPPYGRAPH_PASSWORD=your-neo4j-password \
-PUPPYGRAPH_DATABASE=your-database \
-PUPPYGRAPH_GREMLIN_URL=ws://your-gremlin-server:8182/gremlin \
-PUPPYGRAPH_GREMLIN_USERNAME=your-gremlin-username \
-PUPPYGRAPH_GREMLIN_PASSWORD=your-gremlin-password \
-npm start
-```
 
 ### Connection Verification
 
@@ -220,4 +147,4 @@ You can check connection status using the `puppygraph_status` tool at any time.
 
 ## License
 
-ISC
+Apache 2.0
