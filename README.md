@@ -147,6 +147,33 @@ If you're encountering issues with connections:
 
 You can check connection status using the `puppygraph_status` tool at any time.
 
+## Testing
+
+The PuppyGraph MCP server includes a comprehensive testing suite that follows best practices for testing MCP servers:
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode during development
+npm run test:watch
+
+# Run tests with coverage report
+npm run test:coverage
+```
+
+### Test Structure
+
+- **Unit Tests**: Located in `tests/unit/` directory, these test individual components in isolation with mocks for dependencies
+- **Integration Tests**: Located in `tests/integration/` directory, these test how components work together, including end-to-end tests of the MCP server
+
+### Testing Best Practices
+
+1. **Mock External Dependencies**: All external services (Neo4j, Gremlin, HTTP endpoints) are mocked to avoid test flakiness
+2. **Test MCP Protocol**: Tests verify that the server adheres to the Model Context Protocol
+3. **Coverage**: Aim for high test coverage, especially for critical paths
+4. **Error Handling**: Tests explicitly verify error handling behavior
+
 ## License
 
 Apache 2.0

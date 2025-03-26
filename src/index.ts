@@ -3,7 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { puppyGraphService } from "./services/puppygraph.js";
 
-const server = new McpServer({
+// Create and export the server for testing
+export const server = new McpServer({
   name: "puppygraph",
   version: "1.0.0",
   capabilities: {

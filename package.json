@@ -10,7 +10,9 @@
     "build"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "build": "tsc && chmod 755 build/index.js",
     "start": "node build/index.js"
   },
@@ -26,6 +28,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.20",
-    "typescript": "^5.3.3"
+    "@vitest/coverage-v8": "^1.2.2",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.2",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^6.3.4",
+    "msw": "^2.1.4"
   }
 }
