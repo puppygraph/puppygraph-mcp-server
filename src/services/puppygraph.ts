@@ -4,7 +4,7 @@ import { loadConfig } from '../utils/config.js';
 import { fetchSchemaFromEndpoint } from '../utils/schema.js';
 import { QueryResult, SAMPLE_RESPONSES } from '../utils/types.js';
 
-class PuppyGraphService {
+export class PuppyGraphService {
   private neo4jClient: Neo4jClient;
   private gremlinClient: GremlinClient;
   private config = loadConfig();
