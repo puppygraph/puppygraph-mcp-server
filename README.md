@@ -51,7 +51,7 @@ PUPPYGRAPH_URL=bolt://your-neo4j-server:7687 PUPPYGRAPH_GREMLIN_URL=ws://your-gr
 
 ### Claude Desktop Configuration
 
-> Note: if you're using Claude Desktop to access the tools, make sure that you don't have the server running in a separate terminal. Clause Desktop will start the server itself based on the commands in the MCP config below.
+> Note: if you're using Claude Desktop to access the tools, make sure that you don't have the server running in a separate terminal. Claude Desktop will start the server itself based on the commands in the MCP config below.
 
 You can set up the MCP server in your Claude Desktop configuration and OPTIONALLY include environment variables directly in the config:
 
