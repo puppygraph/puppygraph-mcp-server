@@ -1,4 +1,4 @@
-import * as gremlin from 'gremlin';
+import * as gremlinApi from 'gremlin';
 
 export interface GremlinConfig {
   url: string;
@@ -6,6 +6,8 @@ export interface GremlinConfig {
   password: string;
   traversalSource: string;
 }
+
+const gremlin = (gremlinApi as any).default || gremlinApi;
 
 export class GremlinClient {
   private client: any = null;
