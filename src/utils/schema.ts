@@ -33,7 +33,7 @@ export interface SchemaResult {
  * @returns Schema information
  */
 export async function fetchSchemaFromEndpoint(config: SchemaConfig): Promise<SchemaResult> {
-  console.log(`Fetching schema from endpoint: ${config.url}`);
+  console.error(`Fetching schema from endpoint: ${config.url}`);
   
   try {
     const credentials = btoa(`${config.username}:${config.password}`);
@@ -50,7 +50,7 @@ export async function fetchSchemaFromEndpoint(config: SchemaConfig): Promise<Sch
     }
     
     const schemaData = await response.json();
-    console.log('Successfully fetched schema from endpoint');
+    console.error('Successfully fetched schema from endpoint');
     
     return {
       summary: "PuppyGraph Schema Information",
