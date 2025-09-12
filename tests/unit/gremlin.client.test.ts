@@ -37,21 +37,23 @@ vi.mock('gremlin', () => {
   };
 
   return {
-    driver: {
-      auth: {
-        PlainTextSaslAuthenticator: vi.fn(),
+    default: {
+      driver: {
+        auth: {
+          PlainTextSaslAuthenticator: vi.fn(),
+        },
+        DriverRemoteConnection: vi.fn().mockImplementation(() => mockDriverRemoteConnection),
       },
-      DriverRemoteConnection: vi.fn().mockImplementation(() => mockDriverRemoteConnection),
-    },
-    structure: {
-      Graph: vi.fn().mockImplementation(() => mockGraph),
-    },
-    process: {
-      traversal: vi.fn().mockReturnValue({
-        withRemote: vi.fn().mockReturnValue(mockG),
-      }),
-    },
-    Client: vi.fn().mockImplementation(() => mockClient),
+      structure: {
+        Graph: vi.fn().mockImplementation(() => mockGraph),
+      },
+      process: {
+        traversal: vi.fn().mockReturnValue({
+          withRemote: vi.fn().mockReturnValue(mockG),
+        }),
+      },
+      Client: vi.fn().mockImplementation(() => mockClient),
+    }
   };
 });
 
