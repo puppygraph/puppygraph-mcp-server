@@ -24,9 +24,9 @@ export class PuppyGraphService {
   private connectionError: string | null = null;
 
   constructor() {
-    console.log(`PuppyGraph Neo4j service initialized with URL: ${this.config.neo4j.url}`);
-    console.log(`PuppyGraph Gremlin service initialized with URL: ${this.config.gremlin.url}`);
-    console.log(`Using database: ${this.config.neo4j.database || "default"}`);
+    console.error(`PuppyGraph Neo4j service initialized with URL: ${this.config.neo4j.url}`);
+    console.error(`PuppyGraph Gremlin service initialized with URL: ${this.config.gremlin.url}`);
+    console.error(`Using database: ${this.config.neo4j.database || "default"}`);
     
     this.neo4jClient = new Neo4jClient(this.config.neo4j);
     this.gremlinClient = new GremlinClient(this.config.gremlin);
@@ -70,12 +70,12 @@ export class PuppyGraphService {
   }
 
   public async executeGremlin(params: { query: string; parameters?: Record<string, any> }): Promise<QueryResult<any>> {
-    console.log(`Executing Gremlin query: ${params.query}`);
-    console.log(`Parameters: ${JSON.stringify(params.parameters || {})}`);
+    console.error(`Executing Gremlin query: ${params.query}`);
+    console.error(`Parameters: ${JSON.stringify(params.parameters || {})}`);
     
     // Try to reconnect if needed
     if (!this.gremlinClient.isConnected()) {
-      console.log('Not connected to Gremlin endpoint, attempting to reconnect...');
+      console.error('Not connected to Gremlin endpoint, attempting to reconnect...');
       const reconnected = await this.gremlinClient.connect();
       this.updateConnectionError();
       
@@ -91,7 +91,7 @@ export class PuppyGraphService {
       const result = await this.gremlinClient.executeQuery(params.query, params.parameters);
       const executionTime = Date.now() - startTime;
       
-      console.log(`Gremlin query executed successfully, returned ${result.length} items`);
+      console.error(`Gremlin query executed successfully, returned ${result.length} items`);
       
       return {
         data: result,
@@ -107,12 +107,12 @@ export class PuppyGraphService {
   }
 
   public async executeCypher(params: { query: string; parameters?: Record<string, any> }): Promise<QueryResult<any>> {
-    console.log(`Executing Cypher query: ${params.query}`);
-    console.log(`Parameters: ${JSON.stringify(params.parameters || {})}`);
+    console.error(`Executing Cypher query: ${params.query}`);
+    console.error(`Parameters: ${JSON.stringify(params.parameters || {})}`);
     
     // Try to reconnect if needed
     if (!this.neo4jClient.isConnected()) {
-      console.log('Not connected to Neo4j endpoint, attempting to reconnect...');
+      console.error('Not connected to Neo4j endpoint, attempting to reconnect...');
       const reconnected = await this.neo4jClient.connect();
       this.updateConnectionError();
       
@@ -128,7 +128,7 @@ export class PuppyGraphService {
       const records = await this.neo4jClient.executeQuery(params.query, params.parameters);
       const executionTime = Date.now() - startTime;
       
-      console.log(`Cypher query executed successfully, returned ${records.length} records`);
+      console.error(`Cypher query executed successfully, returned ${records.length} records`);
       
       return {
         data: records,
@@ -144,23 +144,23 @@ export class PuppyGraphService {
   }
 
   public async getDataSources(): Promise<any> {
-    console.log("Fetching data sources information");
+    console.error("Fetching data sources information");
     
     // Try schema endpoint first
     try {
       return await fetchSchemaFromEndpoint(this.config.schema);
     } catch (schemaError: any) {
-      console.log('Schema endpoint failed, falling back to database queries:', schemaError.message);
+      console.error('Schema endpoint failed, falling back to database queries:', schemaError.message);
     }
     
     // Try Neo4j connection
     if (!this.neo4jClient.isConnected()) {
-      console.log('Not connected to Neo4j endpoint, attempting to reconnect...');
+      console.error('Not connected to Neo4j endpoint, attempting to reconnect...');
       const reconnected = await this.neo4jClient.connect();
       this.updateConnectionError();
       
       if (!reconnected) {
-        console.log('Neo4j reconnection failed, trying Gremlin endpoint');
+        console.error('Neo4j reconnection failed, trying Gremlin endpoint');
         
         // Try Gremlin connection
         if (!this.gremlinClient.isConnected()) {
@@ -221,7 +221,7 @@ export class PuppyGraphService {
       this.neo4jClient.close(),
       this.gremlinClient.close()
     ]);
-    console.log('PuppyGraph connections closed');
+    console.error('PuppyGraph connections closed');
   }
 }
 
