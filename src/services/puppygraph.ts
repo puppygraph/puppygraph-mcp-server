@@ -3,6 +3,7 @@ import { GremlinClient } from '../clients/gremlin.js';
 import { loadConfig } from '../utils/config.js';
 import { fetchSchemaFromEndpoint } from '../utils/schema.js';
 import { QueryResult } from '../utils/types.js';
+import { createRequestId, errorCategory, urlForLog } from '../utils/logging.js';
 
 /**
  * Core service that manages connections to graph databases and executes queries
@@ -24,8 +25,8 @@ export class PuppyGraphService {
   private connectionError: string | null = null;
 
   constructor() {
-    console.error(`PuppyGraph Neo4j service initialized with URL: ${this.config.neo4j.url}`);
-    console.error(`PuppyGraph Gremlin service initialized with URL: ${this.config.gremlin.url}`);
+    console.error(`PuppyGraph Neo4j service initialized with URL: ${urlForLog(this.config.neo4j.url)}`);
+    console.error(`PuppyGraph Gremlin service initialized with URL: ${urlForLog(this.config.gremlin.url)}`);
     console.error(`Using database: ${this.config.neo4j.database || "default"}`);
     
     this.neo4jClient = new Neo4jClient(this.config.neo4j);
@@ -38,13 +39,13 @@ export class PuppyGraphService {
     try {
       await this.neo4jClient.connect();
     } catch (error: any) {
-      console.error('Neo4j connection initialization error:', error.message);
+      console.error(`Neo4j connection initialization failed error_type=${errorCategory(error)}`);
     }
     
     try {
       await this.gremlinClient.connect();
     } catch (error: any) {
-      console.error('Gremlin connection initialization error:', error.message);
+      console.error(`Gremlin connection initialization failed error_type=${errorCategory(error)}`);
     }
     
     this.updateConnectionError();
@@ -69,9 +70,9 @@ export class PuppyGraphService {
     }
   }
 
-  public async executeGremlin(params: { query: string; parameters?: Record<string, any> }): Promise<QueryResult<any>> {
-    console.error(`Executing Gremlin query: ${params.query}`);
-    console.error(`Parameters: ${JSON.stringify(params.parameters || {})}`);
+  public async executeGremlin(params: { query: string; parameters?: Record<string, any>; requestId?: string }): Promise<QueryResult<any>> {
+    const requestId = params.requestId || createRequestId();
+    console.error(`Query started request_id=${requestId} language=gremlin`);
     
     // Try to reconnect if needed
     if (!this.gremlinClient.isConnected()) {
@@ -91,7 +92,7 @@ export class PuppyGraphService {
       const result = await this.gremlinClient.executeQuery(params.query, params.parameters);
       const executionTime = Date.now() - startTime;
       
-      console.error(`Gremlin query executed successfully, returned ${result.length} items`);
+      console.error(`Query completed request_id=${requestId} language=gremlin duration_ms=${executionTime} row_count=${result.length}`);
       
       return {
         data: result,
@@ -101,14 +102,14 @@ export class PuppyGraphService {
         }
       };
     } catch (error: any) {
-      console.error('Error executing Gremlin query:', error);
+      console.error(`Query failed request_id=${requestId} language=gremlin error_type=${errorCategory(error)}`);
       throw new Error(`Error executing Gremlin query: ${error.message}`);
     }
   }
 
-  public async executeCypher(params: { query: string; parameters?: Record<string, any> }): Promise<QueryResult<any>> {
-    console.error(`Executing Cypher query: ${params.query}`);
-    console.error(`Parameters: ${JSON.stringify(params.parameters || {})}`);
+  public async executeCypher(params: { query: string; parameters?: Record<string, any>; requestId?: string }): Promise<QueryResult<any>> {
+    const requestId = params.requestId || createRequestId();
+    console.error(`Query started request_id=${requestId} language=cypher`);
     
     // Try to reconnect if needed
     if (!this.neo4jClient.isConnected()) {
@@ -128,7 +129,7 @@ export class PuppyGraphService {
       const records = await this.neo4jClient.executeQuery(params.query, params.parameters);
       const executionTime = Date.now() - startTime;
       
-      console.error(`Cypher query executed successfully, returned ${records.length} records`);
+      console.error(`Query completed request_id=${requestId} language=cypher duration_ms=${executionTime} row_count=${records.length}`);
       
       return {
         data: records,
@@ -138,7 +139,7 @@ export class PuppyGraphService {
         }
       };
     } catch (error: any) {
-      console.error('Error executing Cypher query:', error);
+      console.error(`Query failed request_id=${requestId} language=cypher error_type=${errorCategory(error)}`);
       throw new Error(`Error executing Cypher query: ${error.message}`);
     }
   }
@@ -150,7 +151,7 @@ export class PuppyGraphService {
     try {
       return await fetchSchemaFromEndpoint(this.config.schema);
     } catch (schemaError: any) {
-      console.error('Schema endpoint failed, falling back to database queries:', schemaError.message);
+      console.error(`Schema endpoint failed; using fallback error_type=${errorCategory(schemaError)}`);
     }
     
     // Try Neo4j connection
@@ -176,7 +177,7 @@ export class PuppyGraphService {
         try {
           return await this.gremlinClient.getSchemaData();
         } catch (gremlinError: any) {
-          console.error('Gremlin schema query failed:', gremlinError);
+          console.error(`Gremlin schema query failed error_type=${errorCategory(gremlinError)}`);
           throw new Error('Failed to fetch schema via Gremlin: ' + (gremlinError.message || 'Unknown error'));
         }
       }

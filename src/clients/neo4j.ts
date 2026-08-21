@@ -1,4 +1,5 @@
 import { Driver, Session, auth, driver as createDriver, types, isInt } from 'neo4j-driver';
+import { errorCategory } from '../utils/logging.js';
 
 export interface Neo4jConfig {
   url: string;
@@ -33,7 +34,7 @@ export class Neo4jClient {
       return true;
     } catch (error: any) {
       this.connectionError = error.message;
-      console.error('Failed to initialize Neo4j connection:', error.message);
+      console.error(`Failed to initialize Neo4j connection error_type=${errorCategory(error)}`);
       this.connected = false;
       return false;
     }
@@ -50,7 +51,7 @@ export class Neo4jClient {
       await session.run('RETURN 1 as result');
       console.error('Neo4j connection verified');
     } catch (error: any) {
-      console.error('Neo4j connection verification failed:', error.message);
+      console.error(`Neo4j connection verification failed error_type=${errorCategory(error)}`);
       throw error;
     } finally {
       await session.close();

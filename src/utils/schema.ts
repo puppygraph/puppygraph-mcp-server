@@ -1,3 +1,5 @@
+import { errorCategory, urlForLog } from './logging.js';
+
 /**
  * Configuration for connecting to a schema API endpoint
  */
@@ -33,7 +35,7 @@ export interface SchemaResult {
  * @returns Schema information
  */
 export async function fetchSchemaFromEndpoint(config: SchemaConfig): Promise<SchemaResult> {
-  console.error(`Fetching schema from endpoint: ${config.url}`);
+  console.error(`Fetching schema from endpoint: ${urlForLog(config.url)}`);
   
   try {
     const credentials = btoa(`${config.username}:${config.password}`);
@@ -60,7 +62,7 @@ export async function fetchSchemaFromEndpoint(config: SchemaConfig): Promise<Sch
       timestamp: new Date().toISOString()
     };
   } catch (error: any) {
-    console.error('Error fetching schema from endpoint:', error.message);
+    console.error(`Schema endpoint request failed error_type=${errorCategory(error)}`);
     throw error;
   }
 }
