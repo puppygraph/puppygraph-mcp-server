@@ -1,318 +1,401 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createPuppyGraphServer,
+  type PuppyGraphServiceLike,
+} from "../../src/server.js";
 
-// Mock the MCP SDK since we don't need actual communication for unit tests
-vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
-  McpServer: vi.fn().mockImplementation(() => ({
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    tool: vi.fn(),
-  })),
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/mcp.js', () => ({
-  McpClient: vi.fn().mockImplementation(() => ({
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    invokeMethod: vi.fn().mockImplementation((method, params) => {
-      // Mock responses based on the method and params
-      if (method === 'puppygraph_query') {
-        if (params.query.includes('error')) {
-          return {
-            content: [{ 
-              type: 'text', 
-              text: JSON.stringify({
-                metadata: { error: `Simulated ${params.language} error` }
-              })
-            }]
-          };
-        }
-        return {
-          content: [{ 
-            type: 'text', 
-            text: JSON.stringify({
-              data: [{ id: 1 }, { id: 2 }],
-              metadata: { execution_time: 42, row_count: 2 }
-            })
-          }]
-        };
-      }
-      if (method === 'puppygraph_schema') {
-        return {
-          content: [{ 
-            type: 'text', 
-            text: JSON.stringify({
-              summary: 'PuppyGraph Schema Information',
-              source: 'Mock Test',
-              totalNodes: 10,
-              totalRelationships: 15
-            })
-          }]
-        };
-      }
-      if (method === 'puppygraph_status') {
-        return {
-          content: [{ 
-            type: 'text', 
-            text: JSON.stringify({
-              status: 'connected',
-              fallback_mode: false
-            })
-          }]
-        };
-      }
-      return { content: [{ type: 'text', text: '{}' }] };
-    }),
-  })),
-}));
-
-// Mock the puppygraph service
-vi.mock('../../src/services/puppygraph.js', () => ({
-  puppyGraphService: {
-    executeGremlin: vi.fn().mockImplementation(async ({ query, parameters }) => {
-      if (query.includes('error')) {
-        throw new Error('Simulated Gremlin error');
-      }
-      return {
-        data: [
-          { id: 1, label: 'vertex', properties: { name: ['Test'] } },
-          { id: 2, label: 'vertex', properties: { name: ['Test2'] } },
-        ],
-        metadata: {
-          execution_time: 42,
-          row_count: 2,
-        },
-      };
-    }),
-    executeCypher: vi.fn().mockImplementation(async ({ query, parameters }) => {
-      if (query.includes('error')) {
-        throw new Error('Simulated Cypher error');
-      }
-      return {
-        data: [
-          { n: { id: 1, labels: ['Node'], properties: { name: 'Test' } } },
-          { n: { id: 2, labels: ['Node'], properties: { name: 'Test2' } } },
-        ],
-        metadata: {
-          execution_time: 38,
-          row_count: 2,
-        },
-      };
-    }),
-    getDataSources: vi.fn().mockResolvedValue({
-      summary: 'PuppyGraph Schema Information',
-      source: 'Mock Test',
-      nodeLabels: [{ label: 'Node', count: 10 }],
-      relationshipTypes: [{ type: 'CONNECTS_TO', count: 15 }],
-      totalNodes: 10,
-      totalRelationships: 15,
-    }),
-    getConnectionStatus: vi.fn().mockReturnValue({
-      connected: true,
-      neo4jConnected: true,
-      gremlinConnected: true,
-      connectionError: null,
-      fallbackMode: false,
-    }),
+const queryResult = {
+  data: [{ id: 1, label: "person" }],
+  metadata: {
+    execution_time: 12,
+    row_count: 1,
   },
-}));
+};
 
-// This allows importing the server functions
-vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
-  StdioServerTransport: vi.fn(),
-}));
+const schemaResult = {
+  summary: "PuppyGraph Schema Information",
+  source: "Schema API",
+  schema: {
+    node: [{ label: "person" }],
+    edge: [],
+  },
+  schema_endpoint: "http://localhost:8081/schemajson",
+  timestamp: "2000-01-01T00:00:00.000Z",
+};
 
-// Import and mock the server
-vi.mock('../../src/index.js', () => ({
-  server: {
-    connect: vi.fn(),
-    tool: vi.fn(),
+function parseTextContent(result: { content: Array<Record<string, unknown>> }) {
+  const content = result.content[0];
+  expect(content).toMatchObject({ type: "text" });
+
+  if (content.type !== "text" || typeof content.text !== "string") {
+    throw new Error("Expected an MCP text result");
   }
-}));
 
-describe('MCP Server Integration Tests', () => {
-  let client: any;
-  let puppyGraphService: any;
+  return JSON.parse(content.text);
+}
 
-  beforeAll(async () => {
-    const { puppyGraphService: service } = await import('../../src/services/puppygraph.js');
-    puppyGraphService = service;
-    
-    // Create mock client that doesn't actually need MCP
-    client = {
-      invokeMethod: vi.fn().mockImplementation((method, params) => {
-        if (method === 'puppygraph_query') {
-          if (params.language === 'gremlin') {
-            return {
-              content: [{ 
-                type: 'text', 
-                text: JSON.stringify({
-                  data: [{ id: 1 }, { id: 2 }],
-                  metadata: { execution_time: 42, row_count: 2 }
-                })
-              }]
-            };
-          } else {
-            return {
-              content: [{ 
-                type: 'text', 
-                text: JSON.stringify({
-                  data: [{ n: { id: 1 } }, { n: { id: 2 } }],
-                  metadata: { execution_time: 38, row_count: 2 }
-                })
-              }]
-            };
-          }
-        }
-        if (method === 'puppygraph_schema') {
-          return {
-            content: [{ 
-              type: 'text', 
-              text: JSON.stringify({
-                summary: 'PuppyGraph Schema Information',
-                source: 'Mock Test',
-                totalNodes: 10,
-                totalRelationships: 15
-              })
-            }]
-          };
-        }
-        if (method === 'puppygraph_status') {
-          return {
-            content: [{ 
-              type: 'text', 
-              text: JSON.stringify({
-                status: 'connected',
-                fallback_mode: false
-              })
-            }]
-          };
-        }
-        return { content: [{ type: 'text', text: '{}' }] };
+describe("MCP backward-compatibility contract", () => {
+  let client: Client;
+  let server: McpServer;
+  let service: PuppyGraphServiceLike & {
+    executeGremlin: ReturnType<typeof vi.fn>;
+    executeCypher: ReturnType<typeof vi.fn>;
+    getDataSources: ReturnType<typeof vi.fn>;
+    getConnectionStatus: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(async () => {
+    service = {
+      executeGremlin: vi.fn().mockResolvedValue(queryResult),
+      executeCypher: vi.fn().mockResolvedValue(queryResult),
+      getDataSources: vi.fn().mockResolvedValue(schemaResult),
+      getConnectionStatus: vi.fn().mockReturnValue({
+        connected: true,
+        neo4jConnected: true,
+        gremlinConnected: true,
+        connectionError: null,
+        fallbackMode: false,
       }),
-      disconnect: vi.fn()
     };
-  });
 
-  afterAll(async () => {
-    await client.disconnect();
-  });
-
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  describe('Tool: puppygraph_query', () => {
-    it('should execute Gremlin queries successfully', async () => {
-      const response = await client.invokeMethod('puppygraph_query', {
-        query: 'g.V().limit(10)',
-        language: 'gremlin',
-      });
-
-      const { puppyGraphService } = await import('../../src/services/puppygraph.js');
-      
-      expect(puppyGraphService.executeGremlin).toHaveBeenCalledWith({
-        query: 'g.V().limit(10)',
-        parameters: {},
-      });
-      
-      expect(response.content).toHaveLength(1);
-      expect(response.content[0].type).toBe('text');
-      
-      // Parse the JSON response
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('data');
-      expect(result.data).toHaveLength(2);
-      expect(result).toHaveProperty('metadata');
-      expect(result.metadata).toHaveProperty('execution_time');
-      expect(result.metadata).toHaveProperty('row_count', 2);
+    server = createPuppyGraphServer(service, {
+      PUPPYGRAPH_URL: "bolt://compatibility-test:7687",
+      PUPPYGRAPH_DATABASE: "compatibility-db",
     });
+    client = new Client({ name: "compatibility-test-client", version: "1.1.0" });
 
-    it('should execute Cypher queries successfully', async () => {
-      const response = await client.invokeMethod('puppygraph_query', {
-        query: 'MATCH (n) RETURN n LIMIT 10',
-        language: 'cypher',
-      });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+  });
 
-      const { puppyGraphService } = await import('../../src/services/puppygraph.js');
-      
-      expect(puppyGraphService.executeCypher).toHaveBeenCalledWith({
-        query: 'MATCH (n) RETURN n LIMIT 10',
-        parameters: {},
-      });
-      
-      // Parse the JSON response
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('data');
-      expect(result.data).toHaveLength(2);
-      expect(result).toHaveProperty('metadata');
-      expect(result.metadata).toHaveProperty('execution_time');
-      expect(result.metadata).toHaveProperty('row_count', 2);
-    });
+  afterEach(async () => {
+    await client.close();
+    await server.close();
+  });
 
-    it('should handle errors in queries', async () => {
-      const response = await client.invokeMethod('puppygraph_query', {
-        query: 'g.V().error()',
-        language: 'gremlin',
-      });
-
-      // Parse the JSON response
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('metadata');
-      expect(result.metadata).toHaveProperty('error');
-      expect(result.metadata.error).toContain('Simulated Gremlin error');
+  it("advertises the 1.1.0 server identity", () => {
+    expect(client.getServerVersion()).toEqual({
+      name: "puppygraph",
+      version: "1.1.0",
     });
   });
 
-  describe('Tool: puppygraph_schema', () => {
-    it('should return schema information', async () => {
-      const response = await client.invokeMethod('puppygraph_schema', {});
+  it("advertises the six 1.0.0 tools with compatible input schemas", async () => {
+    const { tools } = await client.listTools();
 
-      const { puppyGraphService } = await import('../../src/services/puppygraph.js');
-      
-      expect(puppyGraphService.getDataSources).toHaveBeenCalled();
-      
-      // Parse the JSON response
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('summary');
-      expect(result).toHaveProperty('source', 'Mock Test');
-      expect(result).toHaveProperty('totalNodes', 10);
-      expect(result).toHaveProperty('totalRelationships', 15);
+    expect(
+      tools.map(({ name, description }) => ({ name, description })),
+    ).toEqual([
+      {
+        name: "puppygraph_query",
+        description:
+          "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
+      },
+      {
+        name: "puppygraph_schema",
+        description:
+          "Get schema and structure information about the PuppyGraph database",
+      },
+      {
+        name: "puppygraph_status",
+        description:
+          "Get connection status and configuration information for PuppyGraph",
+      },
+      {
+        name: "mcp__puppygraph_query",
+        description:
+          "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
+      },
+      {
+        name: "mcp__puppygraph_schema",
+        description:
+          "Get schema and structure information about the PuppyGraph database",
+      },
+      {
+        name: "mcp__puppygraph_status",
+        description:
+          "Get connection status and configuration information for PuppyGraph",
+      },
+    ]);
+
+    const queryTool = tools.find((tool) => tool.name === "puppygraph_query");
+    const prefixedQueryTool = tools.find(
+      (tool) => tool.name === "mcp__puppygraph_query",
+    );
+    expect(queryTool).toBeDefined();
+    expect(prefixedQueryTool).toBeDefined();
+    expect(queryTool?.description).toBe(
+      "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
+    );
+    expect(prefixedQueryTool?.description).toBe(queryTool?.description);
+    expect(prefixedQueryTool?.inputSchema).toEqual(queryTool?.inputSchema);
+    expect(queryTool?.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The query to execute (Gremlin or Cypher)",
+        },
+        language: {
+          type: "string",
+          enum: ["gremlin", "cypher"],
+          description: "The query language to use",
+        },
+        parameters: {
+          type: "object",
+          additionalProperties: {},
+          description: "Optional parameters for the query",
+        },
+      },
+      required: ["query", "language"],
+      additionalProperties: false,
+      $schema: "http://json-schema.org/draft-07/schema#",
     });
+
+    for (const name of [
+      "puppygraph_schema",
+      "puppygraph_status",
+      "mcp__puppygraph_schema",
+      "mcp__puppygraph_status",
+    ]) {
+      expect(tools.find((tool) => tool.name === name)?.inputSchema).toEqual({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+        $schema: "http://json-schema.org/draft-07/schema#",
+      });
+    }
   });
 
-  describe('Tool: puppygraph_status', () => {
-    it('should return connection status', async () => {
-      const response = await client.invokeMethod('puppygraph_status', {});
-
-      const { puppyGraphService } = await import('../../src/services/puppygraph.js');
-      
-      expect(puppyGraphService.getConnectionStatus).toHaveBeenCalled();
-      
-      // Parse the JSON response
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('status', 'connected');
-      expect(result).toHaveProperty('fallback_mode', false);
-    });
-  });
-
-  describe('MCP prefix compatibility', () => {
-    it('should handle mcp__puppygraph_query calls', async () => {
-      const response = await client.invokeMethod('mcp__puppygraph_query', {
-        query: 'MATCH (n) RETURN n LIMIT 5',
-        language: 'cypher',
+  it.each([
+    ["puppygraph_query", "gremlin", "g.V().limit(1)", "executeGremlin"],
+    [
+      "puppygraph_query",
+      "cypher",
+      "MATCH (n) RETURN n LIMIT 1",
+      "executeCypher",
+    ],
+    [
+      "mcp__puppygraph_query",
+      "gremlin",
+      "g.V().limit(1)",
+      "executeGremlin",
+    ],
+    [
+      "mcp__puppygraph_query",
+      "cypher",
+      "MATCH (n) RETURN n LIMIT 1",
+      "executeCypher",
+    ],
+  ] as const)(
+    "%s preserves successful %s query responses",
+    async (toolName, language, query, method) => {
+      const result = await client.callTool({
+        name: toolName,
+        arguments: {
+          query,
+          language,
+          parameters: { limit: 1 },
+        },
       });
 
-      const { puppyGraphService } = await import('../../src/services/puppygraph.js');
-      
-      expect(puppyGraphService.executeCypher).toHaveBeenCalledWith({
-        query: 'MATCH (n) RETURN n LIMIT 5',
-        parameters: {},
+      expect(service[method]).toHaveBeenCalledWith({
+        query,
+        parameters: { limit: 1 },
+        requestId: expect.any(String),
       });
-      
-      // Results should be the same as with the non-prefixed method
-      const result = JSON.parse(response.content[0].text);
-      expect(result).toHaveProperty('data');
-      expect(result.data).toHaveLength(2);
+      expect(result.isError).toBeUndefined();
+      expect(parseTextContent(result)).toEqual(queryResult);
+    },
+  );
+
+  it("keeps parameters optional and forwards an empty object", async () => {
+    const result = await client.callTool({
+      name: "puppygraph_query",
+      arguments: {
+        query: "MATCH (n) RETURN n LIMIT 1",
+        language: "cypher",
+      },
     });
+
+    expect(service.executeCypher).toHaveBeenCalledWith({
+      query: "MATCH (n) RETURN n LIMIT 1",
+      parameters: {},
+      requestId: expect.any(String),
+    });
+    expect(result.isError).toBeUndefined();
+    expect(parseTextContent(result)).toEqual(queryResult);
   });
+
+  it.each(["puppygraph_schema", "mcp__puppygraph_schema"])(
+    "%s preserves the successful schema response",
+    async (toolName) => {
+      const result = await client.callTool({ name: toolName, arguments: {} });
+
+      expect(service.getDataSources).toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
+      expect(parseTextContent(result)).toEqual(schemaResult);
+    },
+  );
+
+  it("does not log query text, parameters, credentials, or driver messages", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const querySecret = "query-secret@example.com";
+    const parameterSecret = "parameter-secret-token";
+    const username = "sensitive-user";
+    const password = "sensitive-password";
+    service.executeCypher.mockRejectedValueOnce(
+      new Error(`${querySecret} ${parameterSecret} ${username} ${password}`),
+    );
+
+    try {
+      const result = await client.callTool({
+        name: "puppygraph_query",
+        arguments: {
+          language: "cypher",
+          query: `MATCH (n {email: '${querySecret}'}) RETURN n`,
+          parameters: { token: parameterSecret, username, password },
+        },
+      });
+
+      const logs = stderr.mock.calls.flat().join(" ");
+      expect(logs).toContain("Query received request_id=");
+      expect(logs).toContain("language=cypher");
+      expect(logs).toContain("error_type=Error");
+      expect(logs).not.toContain(querySecret);
+      expect(logs).not.toContain(parameterSecret);
+      expect(logs).not.toContain(username);
+      expect(logs).not.toContain(password);
+
+      expect(result.isError).toBe(true);
+      expect(parseTextContent(result)).toEqual({
+        data: [],
+        metadata: {
+          error: "Unable to execute PuppyGraph query",
+          error_type: "UPSTREAM_ERROR",
+        },
+      });
+      const serializedResult = JSON.stringify(result);
+      expect(serializedResult).not.toContain(querySecret);
+      expect(serializedResult).not.toContain(parameterSecret);
+      expect(serializedResult).not.toContain(username);
+      expect(serializedResult).not.toContain(password);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it.each(["puppygraph_status", "mcp__puppygraph_status"])(
+    "%s preserves the successful status response",
+    async (toolName) => {
+      const result = await client.callTool({ name: toolName, arguments: {} });
+
+      expect(result.isError).toBeUndefined();
+      expect(parseTextContent(result)).toEqual({
+        status: "connected",
+        fallback_mode: false,
+        error: null,
+        puppygraph_url: "bolt://compatibility-test:7687",
+        puppygraph_database: "compatibility-db",
+      });
+    },
+  );
+
+  it.each(["puppygraph_status", "mcp__puppygraph_status"])(
+    "%s sanitizes a disconnected status without marking the tool call as failed",
+    async (toolName) => {
+      const secret = "bolt://user:password@example.com:7687";
+      service.getConnectionStatus.mockReturnValueOnce({
+        connected: false,
+        neo4jConnected: false,
+        gremlinConnected: false,
+        connectionError: `Connection failed at ${secret}`,
+        fallbackMode: false,
+      });
+
+      const result = await client.callTool({ name: toolName, arguments: {} });
+
+      expect(result.isError).toBeUndefined();
+      expect(parseTextContent(result)).toEqual({
+        status: "disconnected",
+        fallback_mode: false,
+        error: "Unable to connect to PuppyGraph",
+        error_type: "CONNECTION_FAILED",
+        puppygraph_url: "bolt://compatibility-test:7687",
+        puppygraph_database: "compatibility-db",
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain("password");
+    },
+  );
+
+  it.each(["puppygraph_query", "mcp__puppygraph_query"])(
+    "%s marks query failures as sanitized MCP errors",
+    async (toolName) => {
+      const secret = "query-secret://user:password@example.com";
+      service.executeCypher.mockRejectedValueOnce(new Error(secret));
+
+      const result = await client.callTool({
+        name: toolName,
+        arguments: {
+          language: "cypher",
+          query: "MATCH (n) RETURN n",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(parseTextContent(result)).toEqual({
+        data: [],
+        metadata: {
+          error: "Unable to execute PuppyGraph query",
+          error_type: "UPSTREAM_ERROR",
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    },
+  );
+
+  it.each(["puppygraph_schema", "mcp__puppygraph_schema"])(
+    "%s marks schema failures as sanitized MCP errors",
+    async (toolName) => {
+      const secret = "http://user:password@example.com/schemajson?token=secret";
+      service.getDataSources.mockRejectedValueOnce(new Error(secret));
+
+      const result = await client.callTool({ name: toolName, arguments: {} });
+
+      expect(result.isError).toBe(true);
+      expect(parseTextContent(result)).toEqual({
+        metadata: {
+          error: "Unable to fetch PuppyGraph schema",
+          error_type: "UPSTREAM_ERROR",
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    },
+  );
+
+  it.each(["puppygraph_status", "mcp__puppygraph_status"])(
+    "%s marks status failures as sanitized MCP errors",
+    async (toolName) => {
+      const secret = "bolt://user:password@example.com:7687";
+      service.getConnectionStatus.mockImplementationOnce(() => {
+        throw new Error(secret);
+      });
+
+      const result = await client.callTool({ name: toolName, arguments: {} });
+
+      expect(result.isError).toBe(true);
+      expect(parseTextContent(result)).toEqual({
+        status: "error",
+        error: "Unable to fetch PuppyGraph status",
+        error_type: "UPSTREAM_ERROR",
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    },
+  );
 });

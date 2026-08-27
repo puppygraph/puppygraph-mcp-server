@@ -7,26 +7,30 @@ import { fetchSchemaFromEndpoint } from '../../src/utils/schema';
 // Need to mock these imports before importing the service
 vi.mock('../../src/clients/neo4j', () => {
   return {
-    Neo4jClient: vi.fn().mockImplementation(() => ({
-      connect: vi.fn().mockResolvedValue(true),
-      isConnected: vi.fn().mockReturnValue(true),
-      getConnectionError: vi.fn().mockReturnValue(null),
-      executeQuery: vi.fn().mockResolvedValue([]),
-      close: vi.fn().mockResolvedValue(undefined),
-    })),
+    Neo4jClient: vi.fn().mockImplementation(function MockNeo4jClient() {
+      return {
+        connect: vi.fn().mockResolvedValue(true),
+        isConnected: vi.fn().mockReturnValue(true),
+        getConnectionError: vi.fn().mockReturnValue(null),
+        executeQuery: vi.fn().mockResolvedValue([]),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+    }),
   };
 });
 
 vi.mock('../../src/clients/gremlin', () => {
   return {
-    GremlinClient: vi.fn().mockImplementation(() => ({
-      connect: vi.fn().mockResolvedValue(true),
-      isConnected: vi.fn().mockReturnValue(true),
-      getConnectionError: vi.fn().mockReturnValue(null),
-      executeQuery: vi.fn().mockResolvedValue([]),
-      getSchemaData: vi.fn().mockResolvedValue({}),
-      close: vi.fn().mockResolvedValue(undefined),
-    })),
+    GremlinClient: vi.fn().mockImplementation(function MockGremlinClient() {
+      return {
+        connect: vi.fn().mockResolvedValue(true),
+        isConnected: vi.fn().mockReturnValue(true),
+        getConnectionError: vi.fn().mockReturnValue(null),
+        executeQuery: vi.fn().mockResolvedValue([]),
+        getSchemaData: vi.fn().mockResolvedValue({}),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+    }),
   };
 });
 
@@ -148,6 +152,39 @@ describe('PuppyGraphService', () => {
           row_count: 1,
         },
       });
+    });
+
+    it('should log correlation metadata without query or parameter values', async () => {
+      const querySecret = 'private-query-literal';
+      const parameterSecret = 'private-parameter-value';
+      const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      mockNeo4jClient = {
+        isConnected: vi.fn().mockReturnValue(true),
+        executeQuery: vi.fn().mockResolvedValue([{ count: 1 }]),
+        connect: vi.fn().mockResolvedValue(true),
+        getConnectionError: vi.fn().mockReturnValue(null),
+      };
+
+      // @ts-ignore - accessing private property for testing
+      service.neo4jClient = mockNeo4jClient;
+
+      try {
+        await service.executeCypher({
+          query: `MATCH (n {secret: '${querySecret}'}) RETURN n`,
+          parameters: { secret: parameterSecret },
+          requestId: 'test-request-id',
+        });
+
+        const logs = stderr.mock.calls.flat().join(' ');
+        expect(logs).toContain('request_id=test-request-id');
+        expect(logs).toContain('language=cypher');
+        expect(logs).toContain('duration_ms=');
+        expect(logs).toContain('row_count=1');
+        expect(logs).not.toContain(querySecret);
+        expect(logs).not.toContain(parameterSecret);
+      } finally {
+        stderr.mockRestore();
+      }
     });
 
     it('should throw an error if not connected to Neo4j endpoint', async () => {

@@ -3,11 +3,27 @@ import { loadConfig } from '../../src/utils/config';
 
 describe('Config Utilities', () => {
   const originalEnv = { ...process.env };
+  const puppyGraphEnvironmentVariables = [
+    'PUPPYGRAPH_URL',
+    'PUPPYGRAPH_USERNAME',
+    'PUPPYGRAPH_PASSWORD',
+    'PUPPYGRAPH_DATABASE',
+    'PUPPYGRAPH_GREMLIN_URL',
+    'PUPPYGRAPH_GREMLIN_USERNAME',
+    'PUPPYGRAPH_GREMLIN_PASSWORD',
+    'PUPPYGRAPH_GREMLIN_TRAVERSAL_SOURCE',
+    'PUPPYGRAPH_SCHEMA_URL',
+    'PUPPYGRAPH_SCHEMA_USERNAME',
+    'PUPPYGRAPH_SCHEMA_PASSWORD',
+  ];
 
   beforeEach(() => {
     // Reset env before each test
     vi.resetModules();
     process.env = { ...originalEnv };
+    for (const variable of puppyGraphEnvironmentVariables) {
+      delete process.env[variable];
+    }
   });
 
   afterEach(() => {

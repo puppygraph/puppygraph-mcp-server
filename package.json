@@ -1,6 +1,6 @@
 {
   "name": "puppygraph-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "bin": {
     "puppygraph-mcp": "./build/index.js"
   },
@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:live": "npm run build && vitest run --config vitest.live.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "build": "tsc && chmod 755 build/index.js",
@@ -21,18 +22,22 @@
   "license": "ISC",
   "description": "Model Context Protocol (MCP) server for PuppyGraph, enabling graph database queries through Claude",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.7.0",
-    "gremlin": "^3.6.5",
-    "neo4j-driver": "^5.17.0",
-    "zod": "^3.24.2"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "gremlin": "^3.8.1",
+    "neo4j-driver": "^5.28.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^20.11.20",
-    "@types/supertest": "^6.0.2",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@types/node": "^20.19.43",
+    "@vitest/coverage-v8": "^4.1.11",
     "msw": "^2.1.4",
-    "supertest": "^6.3.4",
     "typescript": "^5.3.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "gremlin": {
+      "uuid": "11.1.1",
+      "ws": "8.21.3"
+    }
   }
 }
