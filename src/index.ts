@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createPuppyGraphServer } from "./server.js";
 import { puppyGraphService } from "./services/puppygraph.js";
