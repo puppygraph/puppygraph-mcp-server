@@ -49,6 +49,7 @@ const GREMLIN_WRITE_PATTERNS: Array<[RegExp, string]> = [
   [/\bdrop\s*\(/, "drop()"],
   [/\baddVertex\s*\(/, "addVertex()"],
   [/\baddEdge\s*\(/, "addEdge()"],
+  [/\bremove\s*\(/, "remove()"],
   [/\bio\s*\(/, "io()"],
 ];
 

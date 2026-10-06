@@ -58,6 +58,8 @@ describe('findWriteOperation', () => {
     ["g.V(1).property('age', 30)", 'property()'],
     ['g.V().drop()', 'drop()'],
     ["g.io('graph.json').write()", 'io()'],
+    ["graph.addVertex('name', 'x')", 'addVertex()'],
+    ['g.V(1).next().remove()', 'remove()'],
   ])('flags Gremlin write %j', (query, operation) => {
     expect(findWriteOperation(query, 'gremlin')).toBe(operation);
   });

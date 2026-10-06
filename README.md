@@ -144,7 +144,7 @@ Writes are allowed by default. To stop an agent from changing data, for example 
 claude mcp add puppygraph -- npx -y @puppygraph/mcp-server --read-only
 ```
 
-In read-only mode, `puppygraph_query` rejects Cypher queries that use `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `LOAD CSV` or `FOREACH`, and Gremlin queries that use `addV`, `addE`, `mergeV`, `mergeE`, `property`, `drop` or `io`, before they reach PuppyGraph. The agent gets an error with `error_type: "READ_ONLY"` that names the operation. Keywords inside strings and comments are ignored. The query tool description and `puppygraph_status` (`read_only: true`) tell the agent the mode is on.
+In read-only mode, `puppygraph_query` rejects Cypher queries that use `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `LOAD CSV` or `FOREACH`, and Gremlin queries that use `addV`, `addE`, `mergeV`, `mergeE`, `property`, `drop`, `io`, `addVertex`, `addEdge` or `remove`, before they reach PuppyGraph. The agent gets an error with `error_type: "READ_ONLY"` that names the operation. Keywords inside strings and comments are ignored. The query tool description and `puppygraph_status` (`read_only: true`) tell the agent the mode is on.
 
 Read-only mode is a guard for agents, not access control. To enforce read-only access, use PuppyGraph's access control and connect as a user without write permissions.
 
