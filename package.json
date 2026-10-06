@@ -1,26 +1,49 @@
 {
-  "name": "puppygraph-mcp",
-  "version": "1.1.0",
-  "bin": {
-    "puppygraph-mcp": "./build/index.js"
+  "name": "@puppygraph/mcp-server",
+  "version": "1.2.0",
+  "description": "Model Context Protocol (MCP) server for PuppyGraph: lets AI agents query your graph with Cypher and Gremlin",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "puppygraph",
+    "graph",
+    "cypher",
+    "gremlin",
+    "claude",
+    "cursor"
+  ],
+  "homepage": "https://github.com/puppygraph/puppygraph-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/puppygraph/puppygraph-mcp-server/issues"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/puppygraph/puppygraph-mcp-server.git"
+  },
+  "license": "Apache-2.0",
+  "author": "PuppyGraph",
   "type": "module",
-  "main": "index.js",
+  "bin": {
+    "puppygraph-mcp": "build/index.js"
+  },
   "files": [
     "build"
   ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "vitest run",
     "test:live": "npm run build && vitest run --config vitest.live.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "build": "tsc && chmod 755 build/index.js",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "prepare": "npm run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "Model Context Protocol (MCP) server for PuppyGraph, enabling graph database queries through Claude",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "gremlin": "^3.8.1",

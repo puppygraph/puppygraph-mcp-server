@@ -1,178 +1,181 @@
 # PuppyGraph MCP Server
 
-Model Context Protocol (MCP) server for [PuppyGraph](https://puppygraph.com), allowing Claude to query the graph using Gremlin and Cypher through Claude Desktop.
-
-## Features
-
-- Connect to PuppyGraph instances using both Neo4j Bolt protocol (for Cypher) and WebSocket (for Gremlin)
-- Query graph data using both Gremlin and Cypher query languages
-- Retrieve graph structure and schema information from multiple endpoints
-- Works with Claude Desktop and other MCP-compatible interfaces
-- Robust fallback mechanisms with multiple connection approaches
-- Graceful degradation with sample data when connections fail
-
-## Prerequisites
-
-- Node.js 18+
-- A running PuppyGraph instance (or fallback mode for testing)
-
-## Installation
-
-1. Clone this repository
-2. Install dependencies:
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for [PuppyGraph](https://puppygraph.com). It lets AI agents such as Claude Code, Claude Desktop and Cursor inspect your graph schema and query it with Cypher or Gremlin.
 
 ```bash
-npm install
+npx -y @puppygraph/mcp-server
 ```
 
-3. Build the project:
+## Tools
+
+| Tool | What it does |
+| --- | --- |
+| `puppygraph_query` | Runs a Cypher or Gremlin query and returns the rows |
+| `puppygraph_schema` | Returns the graph schema (node and edge labels, attributes) |
+| `puppygraph_status` | Reports the connection status and whether read-only mode is on |
+
+Each tool is also available with an `mcp__` prefix (e.g. `mcp__puppygraph_query`) for compatibility with some LLM platforms.
+
+When PuppyGraph can't be reached, the tools return an error. They never return sample data.
+
+## Quick start
+
+1. Start PuppyGraph (Docker):
+
+   ```bash
+   docker run -d --name puppy --pull=always \
+     -p 8081:8081 -p 8182:8182 -p 7687:7687 \
+     -e PUPPYGRAPH_PASSWORD=puppygraph123 \
+     puppygraph/puppygraph:latest
+   ```
+
+   Open http://localhost:8081, sign in as `puppygraph` / `puppygraph123` and load a graph schema. See the [PuppyGraph docs](https://docs.puppygraph.com) for connecting your own data.
+
+2. Add the MCP server to your client (below). With PuppyGraph on localhost and the default credentials, no configuration is needed.
+
+3. Ask your agent something like "What's in my PuppyGraph graph?" or "Use PuppyGraph to count the nodes by label."
+
+Requires Node.js 20 or later.
+
+## Client setup
+
+### Claude Code
 
 ```bash
-npm run build
+claude mcp add puppygraph -- npx -y @puppygraph/mcp-server
 ```
 
-## Usage
-
-Start the server:
+With a remote PuppyGraph or other credentials, pass environment variables with `-e`:
 
 ```bash
-npm start
+claude mcp add puppygraph \
+  -e PUPPYGRAPH_URL=bolt://puppygraph.example.com:7687 \
+  -e PUPPYGRAPH_GREMLIN_URL=ws://puppygraph.example.com:8182/gremlin \
+  -e PUPPYGRAPH_SCHEMA_URL=http://puppygraph.example.com:8081/schemajson \
+  -e PUPPYGRAPH_PASSWORD=your-password \
+  -e PUPPYGRAPH_GREMLIN_PASSWORD=your-password \
+  -e PUPPYGRAPH_SCHEMA_PASSWORD=your-password \
+  -- npx -y @puppygraph/mcp-server
 ```
 
-Using environment variables:
+Add `--scope user` to make it available in all your projects.
 
-```bash
-# Connect to a specific PuppyGraph instance
-PUPPYGRAPH_URL=bolt://your-puppygraph-server:7687 PUPPYGRAPH_USERNAME=neo4j PUPPYGRAPH_PASSWORD=your-password npm start
+### Claude Desktop
 
-# Connect to both Neo4j and Gremlin endpoints
-PUPPYGRAPH_URL=bolt://your-neo4j-server:7687 PUPPYGRAPH_GREMLIN_URL=ws://your-gremlin-server:8182/gremlin npm start
-```
-
-### Claude Desktop Configuration
-
-> Note: if you're using Claude Desktop to access the tools, make sure that you don't have the server running in a separate terminal. Claude Desktop will start the server itself based on the commands in the MCP config below.
-
-You can set up the MCP server in your Claude Desktop configuration and OPTIONALLY include environment variables directly in the config:
+Edit `claude_desktop_config.json` (Settings → Developer → Edit Config) and restart Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "puppygraph": {
-      "command": "node",
-      "args": [
-        "/path/to/puppygraph-mcp/build/index.js"
-      ],
+      "command": "npx",
+      "args": ["-y", "@puppygraph/mcp-server"],
       "env": {
-        "PUPPYGRAPH_URL": "bolt://your-neo4j-server:7687",
-        "PUPPYGRAPH_USERNAME": "neo4j",
-        "PUPPYGRAPH_PASSWORD": "your-password",
-        "PUPPYGRAPH_DATABASE": "your-database",
-        "PUPPYGRAPH_GREMLIN_URL": "ws://your-gremlin-server:8182/gremlin",
-        "PUPPYGRAPH_GREMLIN_USERNAME": "your-username",
-        "PUPPYGRAPH_GREMLIN_PASSWORD": "your-password"
+        "PUPPYGRAPH_URL": "bolt://localhost:7687"
       }
     }
   }
 }
 ```
 
-Replace the paths and connection details with your specific values. The `env` section allows you to specify all environment variables directly in the configuration file.
+The `env` block is optional; add any of the [environment variables](#configuration) there.
 
-### Available Tools
+### Cursor
 
-- `puppygraph_query`: Execute Gremlin or Cypher queries against PuppyGraph
-- `puppygraph_schema`: Get schema and structure information about the graph
-- `puppygraph_status`: Check PuppyGraph connection status
+Add the server to `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project):
 
-Each tool is also available with an `mcp__` prefix (e.g., `mcp__puppygraph_query`) for compatibility with certain LLM platforms.
-
-## Environment Variables
-
-### Graph Database Connections
-
-#### Neo4j Connection (Cypher queries)
-- `PUPPYGRAPH_URL`: URL of the PuppyGraph Neo4j endpoint (default: `bolt://localhost:7687`)
-- `PUPPYGRAPH_USERNAME`: Username for PuppyGraph Neo4j authentication (default: `neo4j`)
-- `PUPPYGRAPH_PASSWORD`: Password for PuppyGraph Neo4j authentication (default: `password`)
-- `PUPPYGRAPH_DATABASE`: Name of the database to connect to (default: `""`)
-
-#### Gremlin Connection (Gremlin queries)
-- `PUPPYGRAPH_GREMLIN_URL`: URL of the PuppyGraph Gremlin endpoint (default: `ws://localhost:8182/gremlin`)
-- `PUPPYGRAPH_GREMLIN_USERNAME`: Username for PuppyGraph Gremlin authentication (default: `puppygraph`)
-- `PUPPYGRAPH_GREMLIN_PASSWORD`: Password for PuppyGraph Gremlin authentication (default: `puppygraph123`)
-- `PUPPYGRAPH_GREMLIN_TRAVERSAL_SOURCE`: Traversal source name (default: `g`)
-
-#### Schema API Connection
-- `PUPPYGRAPH_SCHEMA_URL`: URL of the PuppyGraph schema endpoint (default: `http://localhost:8081/schemajson`)
-- `PUPPYGRAPH_SCHEMA_USERNAME`: Username for PuppyGraph schema API authentication (default: `puppygraph`)
-- `PUPPYGRAPH_SCHEMA_PASSWORD`: Password for PuppyGraph schema API authentication (default: `puppygraph123`)
-
-### General Settings
-- Note: Fallback mode has been removed. The server will report actual connection errors to provide better transparency.
-
-## Connection Troubleshooting
-
-This MCP server includes robust fallback mechanisms for handling various connection issues:
-
-1. First attempts to connect to PuppyGraph via Neo4j Bolt protocol for Cypher queries
-2. Separately tries to connect via WebSocket for Gremlin queries
-3. For schema information, first attempts the schema endpoint, then falls back to Neo4j queries, then Gremlin queries
-4. If all direct connections fail, clear error messages will be reported
-
-Connection failures in one protocol won't prevent using another - for example, if Neo4j connection fails but Gremlin succeeds, you'll still be able to run Gremlin queries.
-
-### Connection Verification
-
-You can verify connections using the following methods:
-
-1. Check the server startup logs for connection status
-2. Use the `puppygraph_status` tool in Claude
-3. Test with a simple query:
-
-```
-Use the PuppyGraph tool to execute this Cypher query:
-MATCH (n) RETURN count(n)
+```json
+{
+  "mcpServers": {
+    "puppygraph": {
+      "command": "npx",
+      "args": ["-y", "@puppygraph/mcp-server"]
+    }
+  }
+}
 ```
 
-### Troubleshooting
+### VS Code (GitHub Copilot)
 
-If you're encountering issues with connections:
+Add the server to `.vscode/mcp.json`:
 
-- Ensure the remote server is running and accessible from your network
-- Check that firewall rules allow connections to the appropriate ports
-- Verify your authentication credentials are correct
-- Examine the server logs for detailed error information
-- For Gremlin, ensure the WebSocket URL starts with `ws://` or `wss://`
+```json
+{
+  "servers": {
+    "puppygraph": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@puppygraph/mcp-server"]
+    }
+  }
+}
+```
 
-You can check connection status using the `puppygraph_status` tool at any time.
+### Other MCP clients
 
-## Testing
+Any client that launches stdio MCP servers works: the command is `npx` with arguments `-y @puppygraph/mcp-server`, and settings go in environment variables. Windsurf, Cline and similar clients use the same `mcpServers` JSON shape as Claude Desktop.
 
-The PuppyGraph MCP server includes a comprehensive testing suite that follows best practices for testing MCP servers:
+## Configuration
+
+All settings are environment variables. The defaults match a local PuppyGraph container.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PUPPYGRAPH_URL` | `bolt://localhost:7687` | Bolt endpoint for Cypher |
+| `PUPPYGRAPH_USERNAME` | `puppygraph` | Bolt username |
+| `PUPPYGRAPH_PASSWORD` | `puppygraph123` | Bolt password |
+| `PUPPYGRAPH_DATABASE` | (empty) | Bolt database name |
+| `PUPPYGRAPH_GREMLIN_URL` | `ws://localhost:8182/gremlin` | Gremlin WebSocket endpoint |
+| `PUPPYGRAPH_GREMLIN_USERNAME` | `puppygraph` | Gremlin username |
+| `PUPPYGRAPH_GREMLIN_PASSWORD` | `puppygraph123` | Gremlin password |
+| `PUPPYGRAPH_GREMLIN_TRAVERSAL_SOURCE` | `g` | Gremlin traversal source |
+| `PUPPYGRAPH_SCHEMA_URL` | `http://localhost:8081/schemajson` | Schema endpoint |
+| `PUPPYGRAPH_SCHEMA_USERNAME` | `puppygraph` | Schema endpoint username |
+| `PUPPYGRAPH_SCHEMA_PASSWORD` | `puppygraph123` | Schema endpoint password |
+| `PUPPYGRAPH_READ_ONLY` | `false` | Reject write queries (see below) |
+
+If you changed the PuppyGraph password, set it for all three endpoints (`PUPPYGRAPH_PASSWORD`, `PUPPYGRAPH_GREMLIN_PASSWORD`, `PUPPYGRAPH_SCHEMA_PASSWORD`).
+
+### Read-only mode
+
+Writes are allowed by default. To stop an agent from changing data, for example on a production deployment, turn on read-only mode with `PUPPYGRAPH_READ_ONLY=true` or the `--read-only` flag:
 
 ```bash
-# Run all tests
-npm test
-
-# Run tests in watch mode during development
-npm run test:watch
-
-# Run tests with coverage report
-npm run test:coverage
+claude mcp add puppygraph -- npx -y @puppygraph/mcp-server --read-only
 ```
 
-### Test Structure
+In read-only mode, `puppygraph_query` rejects Cypher queries that use `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `LOAD CSV` or `FOREACH`, and Gremlin queries that use `addV`, `addE`, `mergeV`, `mergeE`, `property`, `drop` or `io`, before they reach PuppyGraph. The agent gets an error with `error_type: "READ_ONLY"` that names the operation. Keywords inside strings and comments are ignored. The query tool description and `puppygraph_status` (`read_only: true`) tell the agent the mode is on.
 
-- **Unit Tests**: Located in `tests/unit/` directory, these test individual components in isolation with mocks for dependencies
-- **Integration Tests**: Located in `tests/integration/` directory, these test how components work together, including end-to-end tests of the MCP server
+Read-only mode is a guard for agents, not access control. To enforce read-only access, use PuppyGraph's access control and connect as a user without write permissions.
 
-### Testing Best Practices
+## Troubleshooting
 
-1. **Mock External Dependencies**: All external services (Neo4j, Gremlin, HTTP endpoints) are mocked to avoid test flakiness
-2. **Test MCP Protocol**: Tests verify that the server adheres to the Model Context Protocol
-3. **Coverage**: Aim for high test coverage, especially for critical paths
-4. **Error Handling**: Tests explicitly verify error handling behavior
+- Ask the agent to call `puppygraph_status`: it shows whether the server is connected and, if not, whether the cause is authentication or the connection.
+- The server logs to stderr (never stdout, which carries the MCP protocol). Claude Desktop writes them to its MCP log files.
+- If PuppyGraph runs on another host or in a container the client can't reach as `localhost`, set the three URL variables to an address the client can reach.
+- Gremlin URLs must start with `ws://` or `wss://`.
+- Cypher and Gremlin connect separately: if one fails, the other language still works.
+
+## Development
+
+```bash
+git clone https://github.com/puppygraph/puppygraph-mcp-server.git
+cd puppygraph-mcp-server
+npm install        # also builds build/ through the prepare script
+npm test           # unit and integration tests (mocked, no PuppyGraph needed)
+npm run build
+node build/index.js
+```
+
+To use a local checkout in a client, replace `npx -y @puppygraph/mcp-server` with `node /path/to/puppygraph-mcp-server/build/index.js`.
+
+Live tests run the built server against a real PuppyGraph:
+
+```bash
+PUPPYGRAPH_LIVE_TEST=true npm run test:live
+```
+
+To test the package as users get it, run `npm pack` and install the tarball, or publish it to a local registry such as [Verdaccio](https://verdaccio.org) and run `npx -y @puppygraph/mcp-server` against it.
 
 ## License
 

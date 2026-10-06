@@ -78,10 +78,10 @@ describe("MCP backward-compatibility contract", () => {
     await server.close();
   });
 
-  it("advertises the 1.1.0 server identity", () => {
+  it("advertises the 1.2.0 server identity", () => {
     expect(client.getServerVersion()).toEqual({
       name: "puppygraph",
-      version: "1.1.0",
+      version: "1.2.0",
     });
   });
 
@@ -302,6 +302,7 @@ describe("MCP backward-compatibility contract", () => {
         error: null,
         puppygraph_url: "bolt://compatibility-test:7687",
         puppygraph_database: "compatibility-db",
+        read_only: false,
       });
     },
   );
@@ -328,6 +329,7 @@ describe("MCP backward-compatibility contract", () => {
         error_type: "CONNECTION_FAILED",
         puppygraph_url: "bolt://compatibility-test:7687",
         puppygraph_database: "compatibility-db",
+        read_only: false,
       });
       expect(JSON.stringify(result)).not.toContain(secret);
       expect(JSON.stringify(result)).not.toContain("password");
@@ -398,4 +400,88 @@ describe("MCP backward-compatibility contract", () => {
       expect(JSON.stringify(result)).not.toContain(secret);
     },
   );
+});
+
+describe("MCP server in read-only mode", () => {
+  let client: Client;
+  let server: McpServer;
+  let service: PuppyGraphServiceLike & {
+    executeGremlin: ReturnType<typeof vi.fn>;
+    executeCypher: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(async () => {
+    service = {
+      executeGremlin: vi.fn().mockResolvedValue(queryResult),
+      executeCypher: vi.fn().mockResolvedValue(queryResult),
+      getDataSources: vi.fn().mockResolvedValue(schemaResult),
+      getConnectionStatus: vi.fn().mockReturnValue({
+        connected: true,
+        neo4jConnected: true,
+        gremlinConnected: true,
+        connectionError: null,
+        fallbackMode: false,
+      }),
+    };
+
+    server = createPuppyGraphServer(service, { PUPPYGRAPH_READ_ONLY: "true" });
+    client = new Client({ name: "read-only-test-client", version: "1.2.0" });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  it.each([
+    ["cypher", "CREATE (n:Person {name: 'x'}) RETURN n", "CREATE", "executeCypher"],
+    ["gremlin", "g.addV('person').property('name', 'x')", "addV()", "executeGremlin"],
+  ])(
+    "rejects a %s write without sending it to PuppyGraph",
+    async (language, query, operation, method) => {
+      const result = await client.callTool({
+        name: "puppygraph_query",
+        arguments: { query, language },
+      });
+
+      expect(result.isError).toBe(true);
+      const body = parseTextContent(result);
+      expect(body.metadata.error_type).toBe("READ_ONLY");
+      expect(body.metadata.error).toContain("read-only mode");
+      expect(body.metadata.error).toContain(operation);
+      expect(service[method as "executeCypher" | "executeGremlin"]).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["cypher", "MATCH (n) RETURN count(n)", "executeCypher"],
+    ["gremlin", "g.V().limit(1).valueMap()", "executeGremlin"],
+  ])("still runs %s reads", async (language, query, method) => {
+    const result = await client.callTool({
+      name: "mcp__puppygraph_query",
+      arguments: { query, language },
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseTextContent(result)).toEqual(queryResult);
+    expect(service[method as "executeCypher" | "executeGremlin"]).toHaveBeenCalledOnce();
+  });
+
+  it("tells the agent about read-only mode in the tool description and status", async () => {
+    const { tools } = await client.listTools();
+    expect(
+      tools.find((tool) => tool.name === "puppygraph_query")?.description,
+    ).toContain("read-only mode");
+
+    const status = await client.callTool({
+      name: "puppygraph_status",
+      arguments: {},
+    });
+    expect(parseTextContent(status).read_only).toBe(true);
+  });
 });

@@ -37,8 +37,8 @@ describe('Config Utilities', () => {
 
       expect(config.neo4j).toEqual({
         url: 'bolt://localhost:7687',
-        username: 'neo4j',
-        password: 'password',
+        username: 'puppygraph',
+        password: 'puppygraph123',
         database: '',
       });
 
@@ -103,7 +103,7 @@ describe('Config Utilities', () => {
       const config = loadConfig();
 
       expect(config.neo4j.url).toBe('bolt://partial-override:7687');
-      expect(config.neo4j.username).toBe('neo4j'); // Default
+      expect(config.neo4j.username).toBe('puppygraph'); // Default
       
       expect(config.gremlin.url).toBe('ws://localhost:8182/gremlin'); // Default
       expect(config.gremlin.password).toBe('partial-override-pass');
