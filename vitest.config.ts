@@ -6,6 +6,7 @@ export default defineConfig({
       'tests/unit/**/*.test.ts',
       'tests/integration/schema-endpoint.test.ts',
       'tests/integration/mcp-server.test.ts',
+      'tests/integration/unreachable.test.ts',
     ],
     environment: 'node',
     globals: true,

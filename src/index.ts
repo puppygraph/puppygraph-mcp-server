@@ -28,9 +28,7 @@ async function main() {
     `PuppyGraph Database: ${process.env.PUPPYGRAPH_DATABASE || "default"}`,
   );
   console.error(
-    `Connection status: ${status.connected ? "Connected" : "Disconnected"}${
-      status.fallbackMode ? " (Using fallback data)" : ""
-    }`,
+    `Connection status: ${status.connected ? "Connected" : "Disconnected"}`,
   );
 
   console.error(
