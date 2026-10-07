@@ -1,6 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  findWriteOperation,
+  isReadOnly,
+  readOnlyErrorMessage,
+} from "./utils/readonly.js";
+import {
   createRequestId,
   errorCategory,
   safeToolError,
@@ -30,6 +35,8 @@ export interface PuppyGraphServiceLike {
 
 const QUERY_DESCRIPTION =
   "Execute a graph query (Gremlin or Cypher) against PuppyGraph";
+const READ_ONLY_QUERY_DESCRIPTION =
+  `${QUERY_DESCRIPTION}. The server is in read-only mode: queries that create, change or delete data are rejected.`;
 const SCHEMA_DESCRIPTION =
   "Get schema and structure information about the PuppyGraph database";
 const STATUS_DESCRIPTION =
@@ -69,13 +76,14 @@ function registerToolSet(
   server: McpServer,
   service: PuppyGraphServiceLike,
   environment: NodeJS.ProcessEnv,
+  readOnly: boolean,
   prefix: "" | "mcp__",
 ): void {
   const suffix = prefix === "mcp__" ? " via mcp__ prefix" : "";
 
   server.tool(
     `${prefix}puppygraph_query`,
-    QUERY_DESCRIPTION,
+    readOnly ? READ_ONLY_QUERY_DESCRIPTION : QUERY_DESCRIPTION,
     querySchema,
     async (args, _extra) => {
       const requestId = createRequestId();
@@ -83,6 +91,22 @@ function registerToolSet(
         console.error(
           `Query received request_id=${requestId} language=${args.language}`,
         );
+
+        const writeOperation = readOnly
+          ? findWriteOperation(args.query, args.language)
+          : null;
+        if (writeOperation) {
+          console.error(
+            `Query rejected request_id=${requestId} language=${args.language} reason=read_only`,
+          );
+          return textErrorResult({
+            data: [],
+            metadata: {
+              error: readOnlyErrorMessage(writeOperation),
+              error_type: "READ_ONLY",
+            },
+          });
+        }
 
         const result =
           args.language === "gremlin"
@@ -166,6 +190,7 @@ function registerToolSet(
             environment.PUPPYGRAPH_URL || "bolt://localhost:7687",
           ),
           puppygraph_database: environment.PUPPYGRAPH_DATABASE || "default",
+          read_only: readOnly,
         });
       } catch (error: any) {
         const safeError = safeToolError(error, "status");
@@ -186,10 +211,11 @@ function registerToolSet(
 export function createPuppyGraphServer(
   service: PuppyGraphServiceLike,
   environment: NodeJS.ProcessEnv = process.env,
+  readOnly: boolean = isReadOnly(environment),
 ): McpServer {
   const server = new McpServer({
     name: "puppygraph",
-    version: "1.1.0",
+    version: "1.2.0",
   }, {
     capabilities: {
       resources: {},
@@ -197,8 +223,8 @@ export function createPuppyGraphServer(
     },
   });
 
-  registerToolSet(server, service, environment, "");
-  registerToolSet(server, service, environment, "mcp__");
+  registerToolSet(server, service, environment, readOnly, "");
+  registerToolSet(server, service, environment, readOnly, "mcp__");
 
   return server;
 }

@@ -229,11 +229,15 @@ export class PuppyGraphService {
 // Create and export a singleton instance
 export const puppyGraphService = new PuppyGraphService();
 
-// Ensure connections are closed gracefully on application shutdown
-process.on('SIGINT', async () => {
-  await puppyGraphService.close();
-});
+// Close connections and exit on shutdown. A signal handler replaces Node's
+// default exit, so without process.exit the server would keep running.
+export async function shutdown(): Promise<void> {
+  try {
+    await puppyGraphService.close();
+  } finally {
+    process.exit(0);
+  }
+}
 
-process.on('SIGTERM', async () => {
-  await puppyGraphService.close();
-});
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

@@ -36,8 +36,8 @@ export function loadConfig(): PuppyGraphConfig {
   return {
     neo4j: {
       url: process.env.PUPPYGRAPH_URL || "bolt://localhost:7687",
-      username: process.env.PUPPYGRAPH_USERNAME || "neo4j",
-      password: process.env.PUPPYGRAPH_PASSWORD || "password",
+      username: process.env.PUPPYGRAPH_USERNAME || "puppygraph",
+      password: process.env.PUPPYGRAPH_PASSWORD || "puppygraph123",
       database: process.env.PUPPYGRAPH_DATABASE || ""
     },
     gremlin: {
