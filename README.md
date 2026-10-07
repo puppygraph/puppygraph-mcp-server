@@ -177,6 +177,33 @@ PUPPYGRAPH_LIVE_TEST=true npm run test:live
 
 To test the package as users get it, run `npm pack` and install the tarball, or publish it to a local registry such as [Verdaccio](https://verdaccio.org) and run `npx -y @puppygraph/mcp-server` against it.
 
+## Publishing
+
+Maintainers publish to npm by hand from a clean checkout of `main`. The version to publish is the `version` in `package.json` (currently `1.2.0`); bump it in a PR before publishing again (`npm version minor --no-git-tag-version` updates `package.json` and `package-lock.json`).
+
+```bash
+git clone https://github.com/puppygraph/puppygraph-mcp-server.git
+cd puppygraph-mcp-server
+
+npm login                 # an account with publish rights on the @puppygraph org
+npm whoami
+
+npm ci                    # installs and builds build/ (prepare script)
+npm test
+npm pack --dry-run        # expect @puppygraph/mcp-server@<version>: build/, README.md, LICENSE, package.json
+
+npm publish --access public   # add --otp=<code> if your account uses 2FA
+```
+
+`npm publish` rebuilds through the `prepare` script. Scoped packages are private by default; `--access public` (also set in `publishConfig`) makes this one public.
+
+Check the release:
+
+```bash
+npm view @puppygraph/mcp-server version
+npx -y @puppygraph/mcp-server   # starts and waits for an MCP client on stdin; Ctrl+C to exit
+```
+
 ## License
 
 Apache 2.0
