@@ -70,7 +70,9 @@ export function loadRestConfig(
     try {
       url = new URL(environment.PUPPYGRAPH_SCHEMA_URL).origin;
     } catch {
-      url = "";
+      // Keep the invalid value so requests fail with a configuration error,
+      // rather than silently going to a PuppyGraph on localhost.
+      url = environment.PUPPYGRAPH_SCHEMA_URL;
     }
   }
   return {

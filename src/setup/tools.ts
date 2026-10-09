@@ -137,8 +137,22 @@ function catalogSummary(catalog: any): Record<string, unknown> {
 }
 
 function liveSchemaSummary(schema: any) {
-  const nodes = Array.isArray(schema?.node) ? schema.node : [];
-  const edges = Array.isArray(schema?.edge) ? schema.edge : [];
+  // Fail closed: anything but an object whose node/edge fields are absent or
+  // arrays could hide an installed schema from the replace guard.
+  const shapeOk =
+    schema !== null &&
+    typeof schema === "object" &&
+    !Array.isArray(schema) &&
+    (schema.node === undefined || Array.isArray(schema.node)) &&
+    (schema.edge === undefined || Array.isArray(schema.edge));
+  if (!shapeOk) {
+    throw new SetupError(
+      "UPSTREAM_ERROR",
+      "Could not tell whether a schema is installed (unexpected response from GET /schemajson); nothing was uploaded.",
+    );
+  }
+  const nodes = schema.node ?? [];
+  const edges = schema.edge ?? [];
   return {
     node_labels: nodes.map((node: any) => node?.label),
     edge_labels: edges.map((edge: any) => edge?.label),
@@ -158,16 +172,29 @@ async function liveVersion(rest: PuppyGraphRestLike): Promise<number | null> {
   return typeof live?.version === "number" ? live.version : null;
 }
 
-// password_env / secret_env may only name variables with this prefix. The
-// agent picks the variable name, so without it an agent could send any secret
-// of the MCP server's process (e.g. a cloud key) to a database host it chose.
+// password_env / secret_env may only name variables with this prefix, or
+// ones the operator lists in SECRET_ENV_ALLOWLIST. The agent picks the
+// variable name, so without this rule an agent could send any secret of the
+// MCP server's process (e.g. a cloud key) to a database host it chose.
 export const SECRET_ENV_PREFIX = "PUPPYGRAPH_SECRET_";
+export const SECRET_ENV_ALLOWLIST = "PUPPYGRAPH_MCP_SECRET_ENV_ALLOWLIST";
+
+function isAllowedSecretEnv(environment: NodeJS.ProcessEnv, variable: string): boolean {
+  if (variable.startsWith(SECRET_ENV_PREFIX) && variable.length > SECRET_ENV_PREFIX.length) {
+    return true;
+  }
+  return (environment[SECRET_ENV_ALLOWLIST] || "")
+    .split(",")
+    .map((name) => name.trim())
+    .some((name) => name !== "" && name === variable);
+}
 
 function readEnvSecret(environment: NodeJS.ProcessEnv, variable: string): string {
-  if (!variable.startsWith(SECRET_ENV_PREFIX) || variable === SECRET_ENV_PREFIX) {
+  // The refusal must not depend on whether the variable exists.
+  if (!isAllowedSecretEnv(environment, variable)) {
     throw new SetupError(
       "INVALID_INPUT",
-      `Environment variable ${variable} can't be used: only variables whose names start with ${SECRET_ENV_PREFIX} can hold catalog secrets. Set e.g. ${SECRET_ENV_PREFIX}PG_PASSWORD in the MCP server's configuration.`,
+      `Environment variable ${variable} can't be used for catalog secrets. Allowed: names starting with ${SECRET_ENV_PREFIX} (e.g. ${SECRET_ENV_PREFIX}PG_PASSWORD), or names the operator lists in ${SECRET_ENV_ALLOWLIST}. Ask the user to set one in the MCP server's configuration, or pass the value directly.`,
     );
   }
   const value = environment[variable];
@@ -266,7 +293,7 @@ export function registerSetupTools(
           password_env: z
             .string()
             .optional()
-            .describe("Name of an environment variable of the MCP server that holds the password (must start with PUPPYGRAPH_SECRET_), so the password never passes through the conversation"),
+            .describe("Name of an environment variable of the MCP server that holds the password (must start with PUPPYGRAPH_SECRET_ or be listed in PUPPYGRAPH_MCP_SECRET_ENV_ALLOWLIST), so the password never passes through the conversation"),
           driver_class: z
             .string()
             .optional()
@@ -278,7 +305,7 @@ export function registerSetupTools(
           secret_env: z
             .record(z.string())
             .optional()
-            .describe("Map of option field name to MCP server environment variable name (must start with PUPPYGRAPH_SECRET_), for secrets in options (e.g. {\"secretKey\": \"PUPPYGRAPH_SECRET_S3_KEY\"})"),
+            .describe("Map of option field name to MCP server environment variable name (same rule as password_env), for secrets in options (e.g. {\"secretKey\": \"PUPPYGRAPH_SECRET_S3_KEY\"})"),
         },
       },
       runTool(
@@ -293,8 +320,10 @@ export function registerSetupTools(
               ? readEnvSecret(environment, args.password_env)
               : args.password;
           const options: Record<string, unknown> = { ...(args.options || {}) };
+          const envSecrets: string[] = [];
           for (const [field, variable] of Object.entries(args.secret_env || {})) {
             options[field] = readEnvSecret(environment, variable);
+            envSecrets.push(options[field] as string);
           }
           const isJdbc = args.type in JDBC_DRIVERS || args.jdbc_uri !== undefined;
           if (isJdbc && !args.jdbc_uri && !("jdbcUri" in options)) {
@@ -317,7 +346,13 @@ export function registerSetupTools(
               `username/password apply to JDBC catalog types only; pass the credentials for '${args.type}' in options (with secret_env for secrets).`,
             );
           }
-          const secrets = [...collectSecrets(catalog), ...(password ? [password] : [])];
+          // Everything secret that is sent, whatever field it is in, so it
+          // can be scrubbed from whatever comes back.
+          const secrets = [
+            ...collectSecrets(catalog),
+            ...(password ? [password] : []),
+            ...envSecrets,
+          ];
           log(`catalog=${JSON.stringify(args.name)} type=${JSON.stringify(args.type)}`);
 
           const response = await rest.request("POST", "/ui-api/catalog", {

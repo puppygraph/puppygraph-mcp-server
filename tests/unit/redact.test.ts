@@ -49,6 +49,12 @@ describe("credential redaction", () => {
     expect(scrubText("unchanged", [""])).toBe("unchanged");
   });
 
+  it("collects credentials embedded in URIs", () => {
+    expect(
+      collectSecrets({ jdbcUri: "jdbc:mysql://admin:hunter22@db/app?password=pw12&db=x" }),
+    ).toEqual(["hunter22", "pw12"]);
+  });
+
   it("collects the secret values of a payload, skipping masks", () => {
     expect(
       collectSecrets({

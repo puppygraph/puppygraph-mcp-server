@@ -130,6 +130,10 @@ describe('loadRestConfig', () => {
     ).toEqual({ url: 'https://pg.example.com:9443', username: 'admin', password: 'secret' });
   });
 
+  it('keeps a malformed PUPPYGRAPH_SCHEMA_URL instead of falling back to localhost', () => {
+    expect(loadRestConfig({ PUPPYGRAPH_SCHEMA_URL: 'not a url' }).url).toBe('not a url');
+  });
+
   it('prefers PUPPYGRAPH_HTTP_URL', () => {
     expect(
       loadRestConfig({

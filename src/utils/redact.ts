@@ -78,6 +78,20 @@ export function scrubText(text: string, secrets: readonly string[] = []): string
   return result;
 }
 
+/** Credentials embedded in a URI: the userinfo password and secret parameters. */
+export function uriSecrets(uri: string): string[] {
+  const found: string[] = [];
+  for (const match of uri.matchAll(/\/\/[^/:@\s]*:([^/@\s]+)@/g)) {
+    found.push(match[1]);
+  }
+  for (const match of uri.matchAll(
+    /[?&;](?:[A-Za-z_]*(?:password|pwd|secret|token|private_?key[A-Za-z_]*))=([^&;\s"]+)/gi,
+  )) {
+    found.push(match[1]);
+  }
+  return found;
+}
+
 /**
  * Collects the literal secret values in a request payload (catalog
  * definitions, schemas with embedded catalogs), so they can be scrubbed from
@@ -90,6 +104,8 @@ export function collectSecrets(value: unknown, found: string[] = []): string[] {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (typeof v === "string" && isSecretKey(k) && v !== "" && v !== MASK) {
         found.push(v);
+      } else if (typeof v === "string") {
+        found.push(...uriSecrets(v).filter((secret) => secret !== MASK));
       } else {
         collectSecrets(v, found);
       }

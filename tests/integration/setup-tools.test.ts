@@ -215,6 +215,60 @@ describe("catalog tools", () => {
     expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
   });
 
+  it("reads other variables only when the operator allowlists them by exact name", async () => {
+    const rest = new FakeRest(baseRoutes({
+      "POST /ui-api/catalog": () => json(200, { catalogs: [registeredCatalog] }),
+    }));
+    await connect(rest, {
+      DB_PASS: PASSWORD,
+      DB_PASS_OTHER: "other-secret-1234",
+      PUPPYGRAPH_MCP_SECRET_ENV_ALLOWLIST: " DB_PASS , OTHER ",
+    });
+    const base = { name: "pg", type: "postgresql", jdbc_uri: "jdbc:postgresql://pgdb:5432/postgres" };
+
+    const allowed = await callTool("puppygraph_create_catalog", { ...base, password_env: "DB_PASS" });
+    expect(allowed.isError).toBe(false);
+    expect((rest.called("POST", "/ui-api/catalog")[0].options.body as any).catalogs[0].jdbcPassword).toBe(PASSWORD);
+
+    const prefixOnly = await callTool("puppygraph_create_catalog", { ...base, password_env: "DB_PASS_OTHER" });
+    expect(prefixOnly.body.error_type).toBe("INVALID_INPUT");
+    expect(prefixOnly.raw).not.toContain("other-secret-1234");
+  });
+
+  it("refuses a disallowed variable the same way whether or not it exists", async () => {
+    await connect(new FakeRest(baseRoutes()), { AWS_SECRET_ACCESS_KEY: "cloud-key-1234" });
+    const base = { name: "x", type: "postgresql", jdbc_uri: "jdbc:postgresql://h/x" };
+
+    const existing = await callTool("puppygraph_create_catalog", { ...base, password_env: "AWS_SECRET_ACCESS_KEY" });
+    const missing = await callTool("puppygraph_create_catalog", { ...base, password_env: "AWS_SECRET_ACCESS_KEX" });
+
+    expect(existing.body.error.replace("AWS_SECRET_ACCESS_KEY", "NAME")).toBe(
+      missing.body.error.replace("AWS_SECRET_ACCESS_KEX", "NAME"),
+    );
+    expect(existing.raw).not.toContain("cloud-key-1234");
+  });
+
+  it("scrubs secrets sent in a JDBC URI or through secret_env from echoed errors", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog": ({ body }: any) => {
+        const sent = body.catalogs[0];
+        return json(500, { errorMessage: `login failed: '${sent.secretKey}' / '${sent.jdbcUri}' / uri-pw-9876` });
+      },
+    })), { PUPPYGRAPH_SECRET_S3: "s3-secret-5555" });
+
+    const { raw } = await callTool("puppygraph_create_catalog", {
+      name: "lake",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://app:uri-pw-9876@db:5432/x",
+      options: { metastore: {} },
+      secret_env: { secretKey: "PUPPYGRAPH_SECRET_S3" },
+    });
+
+    expect(raw).toContain("login failed");
+    expect(raw).not.toContain("uri-pw-9876");
+    expect(raw).not.toContain("s3-secret-5555");
+  });
+
   it.each([
     ["password_env", { password_env: "AWS_SECRET_ACCESS_KEY" }],
     ["secret_env", { options: { metastore: {} }, secret_env: { secretKey: "PUPPYGRAPH_PASSWORD" } }],
@@ -463,6 +517,21 @@ describe("schema tools", () => {
     const replaced = await callTool("puppygraph_upload_schema", { schema: templateSchema(), replace: true });
     expect(replaced.body).toMatchObject({ ok: true, version: 5, previous_version: 4 });
     expect(rest.called("POST", "/schema")).toHaveLength(1);
+  });
+
+  it.each([
+    ["a string", "<html>login</html>"],
+    ["null", null],
+    ["node that is not an array", { node: { label: "Person" } }],
+  ])("refuses to upload when the installed schema can't be read (%s)", async (_name, live) => {
+    const rest = new FakeRest(baseRoutes({ "GET /schemajson": () => json(200, live) }));
+    await connect(rest);
+
+    const { body } = await callTool("puppygraph_upload_schema", { schema: templateSchema() });
+
+    expect(body.error_type).toBe("UPSTREAM_ERROR");
+    expect(body.error).toContain("nothing was uploaded");
+    expect(rest.called("POST", "/schema")).toHaveLength(0);
   });
 
   it("passes PuppyGraph's rejection through with credentials scrubbed", async () => {

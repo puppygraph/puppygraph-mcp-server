@@ -148,6 +148,7 @@ All settings are environment variables. The defaults match a local PuppyGraph co
 | `PUPPYGRAPH_SCHEMA_USERNAME` | `puppygraph` | Schema endpoint username |
 | `PUPPYGRAPH_SCHEMA_PASSWORD` | `puppygraph123` | Schema endpoint password, also used by the setup tools |
 | `PUPPYGRAPH_HTTP_URL` | origin of `PUPPYGRAPH_SCHEMA_URL` | PuppyGraph HTTP API used by the setup tools |
+| `PUPPYGRAPH_MCP_SECRET_ENV_ALLOWLIST` | (empty) | Extra variable names that `password_env` / `secret_env` may read (see [Data source credentials](#data-source-credentials)) |
 | `PUPPYGRAPH_READ_ONLY` | `false` | Reject write queries (see below) |
 
 If you changed the PuppyGraph password, set it for all three endpoints (`PUPPYGRAPH_PASSWORD`, `PUPPYGRAPH_GREMLIN_PASSWORD`, `PUPPYGRAPH_SCHEMA_PASSWORD`).
@@ -168,7 +169,7 @@ Read-only mode is a guard for agents, not access control. To enforce read-only a
 
 ### Data source credentials
 
-The setup tools never return or log data source passwords: responses mask credential fields as `******`, and error messages are scrubbed of the passwords that were sent. To keep a password out of the conversation entirely, put it in the MCP server's environment and have the agent pass the variable name instead (`password_env`, or `secret_env` for other secrets). Only variables whose names start with `PUPPYGRAPH_SECRET_` can be used this way, so an agent can't hand another of the server's secrets to a database:
+The setup tools never return or log data source passwords: responses mask credential fields as `******`, and error messages are scrubbed of the passwords that were sent. To keep a password out of the conversation entirely, put it in the MCP server's environment and have the agent pass the variable name instead (`password_env`, or `secret_env` for other secrets). The agent chooses the variable name, so to stop it from handing another of the server's secrets to a database, only these variables can be used: names starting with `PUPPYGRAPH_SECRET_`, and names you list in `PUPPYGRAPH_MCP_SECRET_ENV_ALLOWLIST` (comma-separated, exact names). Any other name is refused.
 
 ```bash
 claude mcp add puppygraph -e PUPPYGRAPH_SECRET_PG_PASSWORD=... -- npx -y @puppygraph/mcp-server
