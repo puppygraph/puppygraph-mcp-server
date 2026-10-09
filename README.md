@@ -1,6 +1,6 @@
 # PuppyGraph MCP Server
 
-[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for [PuppyGraph](https://puppygraph.com). It lets AI agents such as Claude Code, Claude Desktop and Cursor inspect your graph schema and query it with Cypher or Gremlin.
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for [PuppyGraph](https://puppygraph.com). It lets AI agents such as Claude Code, Claude Desktop and Cursor connect PuppyGraph to your data, build a graph schema, and query the graph with Cypher or Gremlin.
 
 ```bash
 npx -y @puppygraph/mcp-server
@@ -14,7 +14,22 @@ npx -y @puppygraph/mcp-server
 | `puppygraph_schema` | Returns the graph schema (node and edge labels, attributes) |
 | `puppygraph_status` | Reports the connection status and whether read-only mode is on |
 
-Each tool is also available with an `mcp__` prefix (e.g. `mcp__puppygraph_query`) for compatibility with some LLM platforms.
+Each of these three tools is also available with an `mcp__` prefix (e.g. `mcp__puppygraph_query`) for compatibility with some LLM platforms.
+
+Setup tools, to go from an empty PuppyGraph to a graph you can query:
+
+| Tool | What it does |
+| --- | --- |
+| `puppygraph_list_catalogs` | Lists the registered data sources (catalogs), credentials masked |
+| `puppygraph_create_catalog` | Registers a data source, e.g. a PostgreSQL database, as a catalog |
+| `puppygraph_test_catalog` | Checks that PuppyGraph can read data through a catalog |
+| `puppygraph_list_tables` | Lists a catalog's databases, or the tables in one of them |
+| `puppygraph_describe_table` | Lists a table's columns and their PuppyGraph types |
+| `puppygraph_schema_template` | Returns an annotated example of a 1.x graph schema |
+| `puppygraph_validate_schema` | Dry-runs a schema: checks its structure and that its tables and columns exist, without changing anything |
+| `puppygraph_upload_schema` | Installs a schema; replacing an installed schema needs `replace: true` |
+
+`puppygraph_create_catalog` and `puppygraph_upload_schema` change PuppyGraph and are not available in [read-only mode](#read-only-mode). The setup tools need PuppyGraph 1.x and use its HTTP API on port 8081.
 
 When PuppyGraph can't be reached, the tools return an error. They never return sample data.
 
@@ -29,11 +44,11 @@ When PuppyGraph can't be reached, the tools return an error. They never return s
      puppygraph/puppygraph:latest
    ```
 
-   Open http://localhost:8081, sign in as `puppygraph` / `puppygraph123` and load a graph schema. See the [PuppyGraph docs](https://docs.puppygraph.com) for connecting your own data.
-
 2. Add the MCP server to your client (below). With PuppyGraph on localhost and the default credentials, no configuration is needed.
 
-3. Ask your agent something like "What's in my PuppyGraph graph?" or "Use PuppyGraph to count the nodes by label."
+3. Ask your agent to build a graph from your data, for example "Use PuppyGraph to connect to my Postgres at jdbc:postgresql://db:5432/shop and find customers who share a payment card", or, if a schema is already loaded, "What's in my PuppyGraph graph?".
+
+   PuppyGraph connects to your database itself, so the JDBC URI must use an address that the PuppyGraph container can reach (e.g. `host.docker.internal` for a database on your machine, not `localhost`). You can also connect data and build the schema in the web UI at http://localhost:8081 (sign in as `puppygraph` / `puppygraph123`); see the [PuppyGraph docs](https://docs.puppygraph.com).
 
 Requires Node.js 20 or later.
 
@@ -131,7 +146,8 @@ All settings are environment variables. The defaults match a local PuppyGraph co
 | `PUPPYGRAPH_GREMLIN_TRAVERSAL_SOURCE` | `g` | Gremlin traversal source |
 | `PUPPYGRAPH_SCHEMA_URL` | `http://localhost:8081/schemajson` | Schema endpoint |
 | `PUPPYGRAPH_SCHEMA_USERNAME` | `puppygraph` | Schema endpoint username |
-| `PUPPYGRAPH_SCHEMA_PASSWORD` | `puppygraph123` | Schema endpoint password |
+| `PUPPYGRAPH_SCHEMA_PASSWORD` | `puppygraph123` | Schema endpoint password, also used by the setup tools |
+| `PUPPYGRAPH_HTTP_URL` | origin of `PUPPYGRAPH_SCHEMA_URL` | PuppyGraph HTTP API used by the setup tools |
 | `PUPPYGRAPH_READ_ONLY` | `false` | Reject write queries (see below) |
 
 If you changed the PuppyGraph password, set it for all three endpoints (`PUPPYGRAPH_PASSWORD`, `PUPPYGRAPH_GREMLIN_PASSWORD`, `PUPPYGRAPH_SCHEMA_PASSWORD`).
@@ -146,7 +162,23 @@ claude mcp add puppygraph -- npx -y @puppygraph/mcp-server --read-only
 
 In read-only mode, `puppygraph_query` rejects Cypher queries that use `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `LOAD CSV` or `FOREACH`, and Gremlin queries that use `addV`, `addE`, `mergeV`, `mergeE`, `property`, `drop`, `io`, `addVertex`, `addEdge` or `remove`, before they reach PuppyGraph. The agent gets an error with `error_type: "READ_ONLY"` that names the operation. Keywords inside strings and comments are ignored. The query tool description and `puppygraph_status` (`read_only: true`) tell the agent the mode is on.
 
+In read-only mode, `puppygraph_create_catalog` and `puppygraph_upload_schema` are not offered to the agent at all (and refuse if called). The other setup tools only read and stay available.
+
 Read-only mode is a guard for agents, not access control. To enforce read-only access, use PuppyGraph's access control and connect as a user without write permissions.
+
+### Data source credentials
+
+The setup tools never return or log data source passwords: responses mask credential fields as `******`, and error messages are scrubbed of the passwords that were sent. To keep a password out of the conversation entirely, put it in the MCP server's environment and have the agent pass the variable name instead (`password_env`, or `secret_env` for other secrets):
+
+```bash
+claude mcp add puppygraph -e PG_PASSWORD=... -- npx -y @puppygraph/mcp-server
+```
+
+Then: "Create a PuppyGraph catalog for jdbc:postgresql://db:5432/shop as user app, with the password in PG_PASSWORD."
+
+### Replacing a schema
+
+`puppygraph_upload_schema` validates the schema first, then asks PuppyGraph to check every mapped table and column before it changes anything, so a failed upload leaves the installed schema as it was. If a schema is already installed, the upload is refused unless the agent passes `replace: true`; the refusal names the installed version and labels. PuppyGraph keeps earlier versions in its schema history.
 
 ## Troubleshooting
 
@@ -173,6 +205,15 @@ Live tests run the built server against a real PuppyGraph:
 
 ```bash
 PUPPYGRAPH_LIVE_TEST=true npm run test:live
+```
+
+The setup tools have their own live test. It creates a catalog and replaces the installed schema, so run it only against a throwaway PuppyGraph. Load `tests/live/fixtures/setup.sql` into a PostgreSQL database that PuppyGraph can reach, then:
+
+```bash
+PUPPYGRAPH_LIVE_SETUP_TEST=true \
+PUPPYGRAPH_LIVE_JDBC_URI=jdbc:postgresql://<host>:5432/<db> \
+PUPPYGRAPH_LIVE_JDBC_USER=<user> PUPPYGRAPH_LIVE_JDBC_PASSWORD=<password> \
+npm run test:live
 ```
 
 To test the package as users get it, run `npm pack` and install the tarball, or publish it to a local registry such as [Verdaccio](https://verdaccio.org) and run `npx -y @puppygraph/mcp-server` against it.
