@@ -269,6 +269,7 @@ async function checkEntity(entity: Entity, ctx: CheckContext): Promise<void> {
     ...names(value.toKey),
   ]);
   const targets = new Set<string>();
+  const sourceOf = new Map<string, unknown>();
   mapped.forEach((field, index) => {
     const hasSource = typeof field?.sourceFieldName === "string" && field.sourceFieldName !== "";
     const hasExpression = typeof field?.sourceExpression === "string" && field.sourceExpression !== "";
@@ -278,6 +279,21 @@ async function checkEntity(entity: Entity, ctx: CheckContext): Promise<void> {
     if (typeof field?.targetFieldName !== "string" || field.targetFieldName === "") {
       problems.push(`${where}: mappedField[${index}] has an empty targetFieldName.`);
     } else {
+      // PuppyGraph accepts several mappings to one target and silently uses
+      // one of them, so conflicting ones are an error here.
+      const source = field.sourceFieldName ?? field.sourceExpression;
+      if (targets.has(field.targetFieldName)) {
+        const first = sourceOf.get(field.targetFieldName);
+        if (first === source) {
+          warnings.push(`${where}: target field '${field.targetFieldName}' is mapped twice from the same source; remove the duplicate.`);
+        } else {
+          problems.push(
+            `${where}: target field '${field.targetFieldName}' is mapped more than once (from '${first}' and '${source}'); map each target exactly once.`,
+          );
+        }
+      } else {
+        sourceOf.set(field.targetFieldName, source);
+      }
       targets.add(field.targetFieldName);
       if (!declared.has(field.targetFieldName)) {
         problems.push(

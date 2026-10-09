@@ -53,6 +53,10 @@ describe("credential redaction", () => {
     expect(
       collectSecrets({ jdbcUri: "jdbc:mysql://admin:hunter22@db/app?password=pw12&db=x" }),
     ).toEqual(["hunter22", "pw12"]);
+    expect(collectSecrets({ jdbcUri: "jdbc:postgresql://app:p%40ss%2Fw0rd@db/app" })).toEqual([
+      "p%40ss%2Fw0rd",
+      "p@ss/w0rd",
+    ]);
   });
 
   it("collects the secret values of a payload, skipping masks", () => {

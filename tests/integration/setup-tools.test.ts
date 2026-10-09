@@ -442,6 +442,23 @@ describe("schema tools", () => {
     ]);
   });
 
+  it("rejects conflicting mappings to one target and warns about identical ones", async () => {
+    await connect(new FakeRest(baseRoutes()));
+    const schema = templateSchema();
+    const fields = schema.node[0].dataSourceGroup.externalDataSource.mappedField;
+    fields.push({ sourceFieldName: "account_id", targetFieldName: "name" });
+    fields.push({ sourceFieldName: "account_id", targetFieldName: "id" });
+
+    const { body } = await callTool("puppygraph_validate_schema", { schema });
+
+    expect(body.problems).toEqual([
+      "Node 'Account': target field 'name' is mapped more than once (from 'name' and 'account_id'); map each target exactly once.",
+    ]);
+    expect(body.warnings).toEqual([
+      "Node 'Account': target field 'id' is mapped twice from the same source; remove the duplicate.",
+    ]);
+  });
+
   it("reports entries that are not objects", async () => {
     await connect(new FakeRest(baseRoutes()));
     const schema = templateSchema();

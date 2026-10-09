@@ -81,13 +81,23 @@ export function scrubText(text: string, secrets: readonly string[] = []): string
 /** Credentials embedded in a URI: the userinfo password and secret parameters. */
 export function uriSecrets(uri: string): string[] {
   const found: string[] = [];
+  const add = (value: string) => {
+    found.push(value);
+    // A server may echo the decoded form of a percent-encoded credential.
+    try {
+      const decoded = decodeURIComponent(value);
+      if (decoded !== value) found.push(decoded);
+    } catch {
+      // not valid percent-encoding: the raw value is enough
+    }
+  };
   for (const match of uri.matchAll(/\/\/[^/:@\s]*:([^/@\s]+)@/g)) {
-    found.push(match[1]);
+    add(match[1]);
   }
   for (const match of uri.matchAll(
     /[?&;](?:[A-Za-z_]*(?:password|pwd|secret|token|private_?key[A-Za-z_]*))=([^&;\s"]+)/gi,
   )) {
-    found.push(match[1]);
+    add(match[1]);
   }
   return found;
 }

@@ -23,7 +23,14 @@ npm login
 npm whoami
 ```
 
-`npm whoami` must print an account in the `puppygraph` org.
+`npm whoami` prints your username only. Check that the account is a member of the org with publish rights:
+
+```bash
+npm org ls puppygraph <username>
+npm access list collaborators @puppygraph/mcp-server   # after the first release
+```
+
+The first command must show your role in the org (`developer`, `admin` or `owner`). The second must list your account with `read-write`.
 
 ## 3. Install, build and test
 
