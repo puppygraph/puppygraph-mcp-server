@@ -59,7 +59,15 @@ export class PuppyGraphRestClient implements PuppyGraphRestLike {
     path: string,
     options: RestRequest = {},
   ): Promise<RestResponse> {
-    const url = new URL(this.baseUrl + path);
+    let url: URL;
+    try {
+      url = new URL(this.baseUrl + path);
+    } catch {
+      throw new RestConnectionError(
+        `PUPPYGRAPH_HTTP_URL (or PUPPYGRAPH_SCHEMA_URL) is not a valid URL: ${urlForLog(this.baseUrl)}`,
+        false,
+      );
+    }
     for (const [key, value] of Object.entries(options.query || {})) {
       url.searchParams.set(key, value);
     }

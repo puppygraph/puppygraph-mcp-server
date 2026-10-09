@@ -158,7 +158,18 @@ async function liveVersion(rest: PuppyGraphRestLike): Promise<number | null> {
   return typeof live?.version === "number" ? live.version : null;
 }
 
+// password_env / secret_env may only name variables with this prefix. The
+// agent picks the variable name, so without it an agent could send any secret
+// of the MCP server's process (e.g. a cloud key) to a database host it chose.
+export const SECRET_ENV_PREFIX = "PUPPYGRAPH_SECRET_";
+
 function readEnvSecret(environment: NodeJS.ProcessEnv, variable: string): string {
+  if (!variable.startsWith(SECRET_ENV_PREFIX) || variable === SECRET_ENV_PREFIX) {
+    throw new SetupError(
+      "INVALID_INPUT",
+      `Environment variable ${variable} can't be used: only variables whose names start with ${SECRET_ENV_PREFIX} can hold catalog secrets. Set e.g. ${SECRET_ENV_PREFIX}PG_PASSWORD in the MCP server's configuration.`,
+    );
+  }
   const value = environment[variable];
   if (value === undefined || value === "") {
     throw new SetupError(
@@ -255,7 +266,7 @@ export function registerSetupTools(
           password_env: z
             .string()
             .optional()
-            .describe("Name of an environment variable of the MCP server that holds the password, so the password never passes through the conversation"),
+            .describe("Name of an environment variable of the MCP server that holds the password (must start with PUPPYGRAPH_SECRET_), so the password never passes through the conversation"),
           driver_class: z
             .string()
             .optional()
@@ -267,7 +278,7 @@ export function registerSetupTools(
           secret_env: z
             .record(z.string())
             .optional()
-            .describe("Map of option field name to MCP server environment variable name, for secrets in options (e.g. {\"secretKey\": \"AWS_SECRET_ACCESS_KEY\"})"),
+            .describe("Map of option field name to MCP server environment variable name (must start with PUPPYGRAPH_SECRET_), for secrets in options (e.g. {\"secretKey\": \"PUPPYGRAPH_SECRET_S3_KEY\"})"),
         },
       },
       runTool(

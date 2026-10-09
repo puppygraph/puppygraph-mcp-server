@@ -168,13 +168,13 @@ Read-only mode is a guard for agents, not access control. To enforce read-only a
 
 ### Data source credentials
 
-The setup tools never return or log data source passwords: responses mask credential fields as `******`, and error messages are scrubbed of the passwords that were sent. To keep a password out of the conversation entirely, put it in the MCP server's environment and have the agent pass the variable name instead (`password_env`, or `secret_env` for other secrets):
+The setup tools never return or log data source passwords: responses mask credential fields as `******`, and error messages are scrubbed of the passwords that were sent. To keep a password out of the conversation entirely, put it in the MCP server's environment and have the agent pass the variable name instead (`password_env`, or `secret_env` for other secrets). Only variables whose names start with `PUPPYGRAPH_SECRET_` can be used this way, so an agent can't hand another of the server's secrets to a database:
 
 ```bash
-claude mcp add puppygraph -e PG_PASSWORD=... -- npx -y @puppygraph/mcp-server
+claude mcp add puppygraph -e PUPPYGRAPH_SECRET_PG_PASSWORD=... -- npx -y @puppygraph/mcp-server
 ```
 
-Then: "Create a PuppyGraph catalog for jdbc:postgresql://db:5432/shop as user app, with the password in PG_PASSWORD."
+Then: "Create a PuppyGraph catalog for jdbc:postgresql://db:5432/shop as user app, with the password in PUPPYGRAPH_SECRET_PG_PASSWORD."
 
 ### Replacing a schema
 

@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * Needs a PostgreSQL loaded with tests/live/fixtures/setup.sql and:
  *   PUPPYGRAPH_LIVE_JDBC_URI     JDBC URI as PuppyGraph reaches it
  *   PUPPYGRAPH_LIVE_JDBC_USER    database user
- *   PUPPYGRAPH_LIVE_JDBC_PASSWORD  database password (passed via password_env)
+ *   PUPPYGRAPH_LIVE_JDBC_PASSWORD  database password (handed to the server as
+ *                                  PUPPYGRAPH_SECRET_LIVE_JDBC and passed via password_env)
  */
 const enabled = process.env.PUPPYGRAPH_LIVE_SETUP_TEST === "true";
 const describeLive = enabled ? describe : describe.skip;
@@ -48,7 +49,7 @@ describeLive("live catalog and schema setup through MCP", () => {
       command: process.execPath,
       args: ["build/index.js"],
       cwd: process.cwd(),
-      env: stringEnvironment(),
+      env: { ...stringEnvironment(), PUPPYGRAPH_SECRET_LIVE_JDBC: jdbcPassword },
       stderr: "pipe",
     });
     transport.stderr?.on("data", (chunk) => {
@@ -68,7 +69,7 @@ describeLive("live catalog and schema setup through MCP", () => {
       type: "postgresql",
       jdbc_uri: jdbcUri,
       username: jdbcUser,
-      password_env: "PUPPYGRAPH_LIVE_JDBC_PASSWORD",
+      password_env: "PUPPYGRAPH_SECRET_LIVE_JDBC",
     });
     expect(created).toMatchObject({ isError: false, body: { ok: true, catalog: { name: catalog } } });
 

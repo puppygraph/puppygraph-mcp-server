@@ -14,10 +14,6 @@ export const MASK = "******";
 const SECRET_KEY_PATTERN =
   /pass(word)?$|secret|token|credential|private.?key|access.?key|api.?key|sas$/i;
 
-// Secrets shorter than this are not scrubbed from free text: replacing every
-// "a" or "pw" in a message would make it unreadable and protect little.
-const MIN_SCRUB_LENGTH = 4;
-
 export function isSecretKey(key: string): boolean {
   return SECRET_KEY_PATTERN.test(key);
 }
@@ -75,7 +71,7 @@ function maskValue(
 export function scrubText(text: string, secrets: readonly string[] = []): string {
   let result = text;
   for (const secret of secrets) {
-    if (secret.length >= MIN_SCRUB_LENGTH) {
+    if (secret !== "") {
       result = result.split(secret).join(MASK);
     }
   }

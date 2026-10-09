@@ -41,11 +41,12 @@ describe("credential redaction", () => {
     expect(redactUri("jdbc:postgresql://db:5432/app")).toBe("jdbc:postgresql://db:5432/app");
   });
 
-  it("scrubs known secrets from free text, ignoring very short ones", () => {
+  it("scrubs every known secret from free text, however short", () => {
     expect(scrubText("auth failed for 'Sup3rSecret'", ["Sup3rSecret"])).toBe(
       "auth failed for '******'",
     );
-    expect(scrubText("a b c", ["a"])).toBe("a b c");
+    expect(scrubText("user x, password xy7", ["xy7"])).toBe("user x, password ******");
+    expect(scrubText("unchanged", [""])).toBe("unchanged");
   });
 
   it("collects the secret values of a payload, skipping masks", () => {
