@@ -111,7 +111,7 @@ export async function validateSchema(
     graph = converted.body as Record<string, any>;
     result.convertedFrom0x = true;
     result.warnings.push(
-      "The schema is in the deprecated 0.x format (catalogs/graph.vertices). It was converted to 1.x for these checks, and upload_schema converts it the same way. Prefer writing 1.x schemas (see puppygraph_schema_template).",
+      "The schema is in the deprecated 0.x format (catalogs/graph.vertices). It was converted to 1.x for these checks; upload_schema sends it as given and PuppyGraph converts it. Prefer writing 1.x schemas (see puppygraph_schema_template).",
     );
   }
   result.schema = graph;

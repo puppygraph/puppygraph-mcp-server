@@ -563,17 +563,41 @@ export function registerSetupTools(
             );
           }
 
-          // Send the schema that was validated: for a 0.x input that is the
-          // converted 1.x schema, which also works on servers that don't
-          // convert 0.x on upload (1.13 and older).
-          const parsed = validation.schema;
-          const secrets = secretsOfSchema(parsed);
+          // Always send the caller's schema as given. For a 0.x schema the
+          // server converts it itself; the converted schema from validation
+          // is only for checks, because servers may mask catalog passwords in
+          // convertSchema output, and uploading that would store "******".
+          const original = typeof schema === "string" ? JSON.parse(schema) : schema;
+          const secrets = secretsOfSchema(original);
           log(`replace=${replace === true} nodes=${(validation.schema?.node || []).length} edges=${(validation.schema?.edge || []).length}`);
-          const response = await rest.request("POST", "/schema", {
-            query: { preflight: "true" },
-            body: parsed,
-            timeoutMs: UPLOAD_TIMEOUT_MS,
-          });
+          const upload = (body: unknown) =>
+            rest.request("POST", "/schema", {
+              query: { preflight: "true" },
+              body,
+              timeoutMs: UPLOAD_TIMEOUT_MS,
+            });
+          let response = await upload(original);
+          if (
+            validation.convertedFrom0x &&
+            response.status === 400 &&
+            /unknown field \\?"(catalogs|graph)\\?"/.test(responseError(response.body, secrets))
+          ) {
+            // Servers before 1.14 can't convert 0.x on upload. Fall back to the
+            // converted schema, but only if conversion kept every credential:
+            // a masked one would be stored as the literal mask.
+            const converted = validation.schema;
+            if (collectSecrets(converted).length < secrets.length || containsMask(converted)) {
+              throw new SetupError(
+                "UPSTREAM_ERROR",
+                "This PuppyGraph can't convert 0.x schemas on upload, and its converted schema has masked catalog credentials, so it can't be uploaded safely; the installed schema is unchanged. Upload the converted 1.x schema from puppygraph_validate_schema with the real credentials filled in, or register the catalog with puppygraph_create_catalog and remove it from the schema.",
+              );
+            }
+            log("server does not convert 0.x on upload; uploading the converted schema");
+            validation.warnings.push(
+              "This PuppyGraph doesn't convert 0.x schemas on upload, so the schema converted during validation was uploaded instead.",
+            );
+            response = await upload(converted);
+          }
           const body = (response.body && typeof response.body === "object" ? response.body : {}) as any;
           if (!response.ok || body.ok !== true) {
             if (response.status === 401 || response.status === 403) {
@@ -598,6 +622,16 @@ export function registerSetupTools(
       ),
     );
   }
+}
+
+function containsMask(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsMask);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(containsMask);
+  }
+  return value === MASK;
 }
 
 function secretsOfSchema(schema: unknown): string[] {

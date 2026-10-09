@@ -517,6 +517,70 @@ describe("schema tools", () => {
     expect(upload.options.body).toEqual(templateSchema());
   });
 
+  describe("0.x schemas", () => {
+    const legacy = {
+      catalogs: [{ name: "pg", type: "postgresql", jdbc: { username: "postgres", password: PASSWORD } }],
+      graph: { vertices: [{ label: "Account" }], edges: [] },
+    };
+    const convertedWith = (password: string) => ({
+      catalog: [{ name: "pg", type: "postgresql", jdbc: { username: "postgres", password } }],
+      ...templateSchema(),
+    });
+
+    it("uploads the original 0.x schema, never the converted one with masked credentials", async () => {
+      const rest = new FakeRest(baseRoutes({
+        // Servers that mask credentials in convertSchema output.
+        "POST /ui-api/convertSchema": () => json(200, convertedWith("******")),
+      }));
+      await connect(rest);
+
+      const { body, isError } = await callTool("puppygraph_upload_schema", { schema: legacy });
+
+      expect(isError).toBe(false);
+      expect(body.ok).toBe(true);
+      const uploads = rest.called("POST", "/schema");
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].options.body).toEqual(legacy);
+    });
+
+    it("falls back to the converted schema when the server can't convert 0.x on upload", async () => {
+      let calls = 0;
+      const rest = new FakeRest(baseRoutes({
+        "POST /ui-api/convertSchema": () => json(200, convertedWith(PASSWORD)),
+        "POST /schema": () =>
+          ++calls === 1
+            ? json(400, { ok: false, error: 'Failed to parse schema: proto: (line 1:2): unknown field "catalogs"' })
+            : json(200, { ok: true, version: 2, message: "Schema uploaded successfully" }),
+      }));
+      await connect(rest);
+
+      const { body, raw } = await callTool("puppygraph_upload_schema", { schema: legacy });
+
+      expect(body).toMatchObject({ ok: true, version: 2 });
+      expect(body.warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining("doesn't convert 0.x schemas on upload"),
+      ]));
+      const uploads = rest.called("POST", "/schema");
+      expect(uploads.map((upload) => upload.options.body)).toEqual([legacy, convertedWith(PASSWORD)]);
+      expect(raw).not.toContain(PASSWORD);
+    });
+
+    it("refuses the fallback when the converted schema has masked credentials", async () => {
+      const rest = new FakeRest(baseRoutes({
+        "POST /ui-api/convertSchema": () => json(200, convertedWith("******")),
+        "POST /schema": () =>
+          json(400, { ok: false, error: 'Failed to parse schema: proto: (line 1:2): unknown field "catalogs"' }),
+      }));
+      await connect(rest);
+
+      const { body } = await callTool("puppygraph_upload_schema", { schema: legacy });
+
+      expect(body.error_type).toBe("UPSTREAM_ERROR");
+      expect(body.error).toContain("masked catalog credentials");
+      expect(rest.called("POST", "/schema")).toHaveLength(1);
+    });
+  });
+
   it("refuses to upload an invalid schema without calling POST /schema", async () => {
     const rest = new FakeRest(baseRoutes());
     await connect(rest);
