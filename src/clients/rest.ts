@@ -98,7 +98,18 @@ export class PuppyGraphRestClient implements PuppyGraphRestLike {
       );
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error: any) {
+      const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+      throw new RestConnectionError(
+        timedOut
+          ? `PuppyGraph did not finish answering ${method} ${path} in time`
+          : `The connection to PuppyGraph broke while reading the answer to ${method} ${path}`,
+        timedOut,
+      );
+    }
     let body: unknown = text;
     if (text.trim() !== "") {
       try {

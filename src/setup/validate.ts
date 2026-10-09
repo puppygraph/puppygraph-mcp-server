@@ -1,4 +1,4 @@
-import type { PuppyGraphRestLike } from "../clients/rest.js";
+import type { PuppyGraphRestLike, RestResponse } from "../clients/rest.js";
 import { collectSecrets, scrubText } from "../utils/redact.js";
 
 /**
@@ -19,6 +19,23 @@ export interface ValidationResult {
   /** The 1.x schema that was checked (credentials NOT masked: internal use). */
   schema: Record<string, any> | null;
   tablesChecked: number;
+}
+
+/**
+ * An HTTP answer that says nothing about the schema (rejected credentials,
+ * missing permission), so it must not be reported as a schema problem.
+ */
+export class UpstreamHttpError extends Error {
+  constructor(readonly response: RestResponse, readonly action: string) {
+    super(`HTTP ${response.status} while trying to ${action}`);
+    this.name = "UpstreamHttpError";
+  }
+}
+
+function throwIfAccessDenied(response: RestResponse, action: string): void {
+  if (response.status === 401 || response.status === 403) {
+    throw new UpstreamHttpError(response, action);
+  }
 }
 
 type Entity = { kind: "Node" | "Edge"; value: Record<string, any> };
@@ -84,6 +101,7 @@ export async function validateSchema(
     const converted = await rest.request("POST", "/ui-api/convertSchema", {
       body: { schemaJson: graph, createLocalTable: false, defaultDataSource: "external" },
     });
+    throwIfAccessDenied(converted, "convert the 0.x schema");
     if (!converted.ok || !converted.body || typeof converted.body !== "object") {
       result.problems.push(
         `The schema is in the deprecated 0.x format and PuppyGraph could not convert it: ${responseError(converted.body, secrets)}`,
@@ -112,6 +130,7 @@ export async function validateSchema(
   );
   let registered: Set<string> | null = null;
   const catalogs = await rest.request("GET", "/ui-api/catalog");
+  throwIfAccessDenied(catalogs, "list catalogs");
   if (catalogs.ok && catalogs.body && typeof catalogs.body === "object") {
     registered = new Set(
       (((catalogs.body as any).catalogs || []) as any[])
@@ -378,6 +397,7 @@ function tableColumns(
         query: { catalogName: catalog, databaseName: schema, tableName: table },
       })
       .then((response) => {
+        throwIfAccessDenied(response, `read the columns of '${catalog}.${schema}.${table}'`);
         const body = response.body as any;
         if (response.ok && body && Array.isArray(body.column)) {
           return names(body.column);

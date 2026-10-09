@@ -47,6 +47,9 @@ describe("credential redaction", () => {
     );
     expect(scrubText("user x, password xy7", ["xy7"])).toBe("user x, password ******");
     expect(scrubText("unchanged", [""])).toBe("unchanged");
+    expect(scrubText("a*b", Array(8).fill("*"))).toBe("a******b");
+    expect(scrubText("pw=abc123 and abc", ["abc", "abc123"])).toBe("pw=****** and ******");
+    expect(scrubText("x.y", ["."])).toBe("x******y");
   });
 
   it("collects credentials embedded in URIs", () => {

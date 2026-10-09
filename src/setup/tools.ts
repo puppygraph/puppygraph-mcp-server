@@ -8,7 +8,7 @@ import {
 import { createRequestId, errorCategory } from "../utils/logging.js";
 import { collectSecrets, maskSecrets, MASK, scrubText } from "../utils/redact.js";
 import { SCHEMA_TEMPLATE, SCHEMA_TEMPLATE_NOTES } from "./template.js";
-import { responseError, validateSchema } from "./validate.js";
+import { responseError, UpstreamHttpError, validateSchema } from "./validate.js";
 
 /**
  * Tools that take an agent from an empty PuppyGraph to a queryable graph:
@@ -225,6 +225,9 @@ function runTool<A>(name: string, handler: Handler<A>, secretsOf: (args: A) => s
       let code: SetupErrorCode = "UPSTREAM_ERROR";
       let message = "Unexpected error";
       let details: Record<string, unknown> = {};
+      if (error instanceof UpstreamHttpError) {
+        error = errorFromResponse(error.response, error.action, secrets);
+      }
       if (error instanceof SetupError) {
         ({ code, message, details } = error);
       } else if (error instanceof RestConnectionError) {

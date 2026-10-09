@@ -390,6 +390,18 @@ describe("catalog tools", () => {
     expect(body.error).toContain("is not a valid URL");
   });
 
+  it("reports rejected credentials during validation as AUTHENTICATION_FAILED, not a schema problem", async () => {
+    const rest = new FakeRest(baseRoutes({ "POST /ui-api/convertSchema": () => json(401, "Unauthorized") }));
+    await connect(rest);
+
+    const { body } = await callTool("puppygraph_upload_schema", {
+      schema: { graph: { vertices: [], edges: [] } },
+    });
+
+    expect(body.error_type).toBe("AUTHENTICATION_FAILED");
+    expect(rest.called("POST", "/schema")).toHaveLength(0);
+  });
+
   it("reports rejected HTTP credentials as AUTHENTICATION_FAILED", async () => {
     await connect(new FakeRest({ "GET /ui-api/catalog": () => json(401, "Unauthorized") }));
 

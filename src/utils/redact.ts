@@ -67,15 +67,24 @@ function maskValue(
   return value;
 }
 
-/** Replaces every occurrence of the given secrets in free text. */
+/**
+ * Replaces every occurrence of the given secrets in free text, in a single
+ * pass so the mask itself is never scanned again (a secret like "*" would
+ * otherwise multiply the text with every replacement). Longer secrets win
+ * where they overlap.
+ */
 export function scrubText(text: string, secrets: readonly string[] = []): string {
-  let result = text;
-  for (const secret of secrets) {
-    if (secret !== "") {
-      result = result.split(secret).join(MASK);
-    }
+  const unique = [...new Set(secrets.filter((secret) => secret !== ""))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (unique.length === 0) {
+    return text;
   }
-  return result;
+  const pattern = new RegExp(
+    unique.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+    "g",
+  );
+  return text.replace(pattern, MASK);
 }
 
 /** Credentials embedded in a URI: the userinfo password and secret parameters. */
