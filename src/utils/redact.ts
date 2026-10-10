@@ -10,9 +10,11 @@
 export const MASK = "******";
 
 // Field names that hold credentials in catalog definitions: jdbc.password,
-// jdbcPassword, accessKey/secretKey, client_secret, sasToken, token, ...
+// jdbcPassword, accessKey/secretKey, client_secret, sasToken, token,
+// accountKey/serviceAccountKey(Json), ... Account-key names must end there,
+// so path or id fields such as serviceAccountKeyFile are left alone.
 const SECRET_KEY_PATTERN =
-  /pass(word)?$|secret|token|credential|private.?key|access.?key|api.?key|sas$/i;
+  /pass(word)?$|secret|token|credential|private.?key|access.?key|api.?key|sas$|account.?key(.?json)?$/i;
 
 export function isSecretKey(key: string): boolean {
   return SECRET_KEY_PATTERN.test(key);

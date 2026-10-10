@@ -586,10 +586,10 @@ export function registerSetupTools(
             // converted schema, but only if conversion kept every credential:
             // a masked one would be stored as the literal mask.
             const converted = validation.schema;
-            if (collectSecrets(converted).length < secrets.length || containsMask(converted)) {
+            if (!keepsEveryCredential(secrets, collectSecrets(converted)) || containsMask(converted)) {
               throw new SetupError(
                 "UPSTREAM_ERROR",
-                "This PuppyGraph can't convert 0.x schemas on upload, and its converted schema has masked catalog credentials, so it can't be uploaded safely; the installed schema is unchanged. Upload the converted 1.x schema from puppygraph_validate_schema with the real credentials filled in, or register the catalog with puppygraph_create_catalog and remove it from the schema.",
+                "This PuppyGraph can't convert 0.x schemas on upload, and its converted schema has masked or missing catalog credentials, so it can't be uploaded safely; the installed schema is unchanged. Upload the converted 1.x schema from puppygraph_validate_schema with the real credentials filled in, or register the catalog with puppygraph_create_catalog and remove it from the schema.",
               );
             }
             log("server does not convert 0.x on upload; uploading the converted schema");
@@ -622,6 +622,26 @@ export function registerSetupTools(
       ),
     );
   }
+}
+
+/**
+ * Whether every credential of the original schema is still in the converted
+ * one, counting repeats: comparing totals alone would accept a conversion
+ * that dropped one credential and duplicated another.
+ */
+function keepsEveryCredential(original: readonly string[], converted: readonly string[]): boolean {
+  const available = new Map<string, number>();
+  for (const secret of converted) {
+    available.set(secret, (available.get(secret) ?? 0) + 1);
+  }
+  for (const secret of original) {
+    const left = available.get(secret) ?? 0;
+    if (left === 0) {
+      return false;
+    }
+    available.set(secret, left - 1);
+  }
+  return true;
 }
 
 function containsMask(value: unknown): boolean {

@@ -312,6 +312,22 @@ describe("catalog tools", () => {
     expect(raw).not.toContain(PASSWORD);
   });
 
+  it("scrubs account keys passed in options from echoed errors and results", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog": ({ body }: any) =>
+        json(500, { errorMessage: `auth failed for key ${body.catalogs[0].accountKey}` }),
+    })));
+
+    const { body, raw } = await callTool("puppygraph_create_catalog", {
+      name: "lake",
+      type: "deltalake",
+      options: { accountName: "acct", accountKey: "azure-key-1234" },
+    });
+
+    expect(body.error).toContain("auth failed for key");
+    expect(raw).not.toContain("azure-key-1234");
+  });
+
   it("reports a name clash as ALREADY_EXISTS", async () => {
     await connect(new FakeRest(baseRoutes({
       "POST /ui-api/catalog": () =>
@@ -576,8 +592,39 @@ describe("schema tools", () => {
       const { body } = await callTool("puppygraph_upload_schema", { schema: legacy });
 
       expect(body.error_type).toBe("UPSTREAM_ERROR");
-      expect(body.error).toContain("masked catalog credentials");
+      expect(body.error).toContain("masked or missing catalog credentials");
       expect(rest.called("POST", "/schema")).toHaveLength(1);
+    });
+
+    it("refuses the fallback when conversion dropped one credential and duplicated another", async () => {
+      const twoCatalogs = {
+        catalogs: [
+          { name: "a", type: "postgresql", jdbc: { username: "u", password: "pw-alpha-1" } },
+          { name: "b", type: "postgresql", jdbc: { username: "u", password: "pw-bravo-2" } },
+        ],
+        graph: { vertices: [{ label: "Account" }], edges: [] },
+      };
+      const rest = new FakeRest(baseRoutes({
+        "POST /ui-api/convertSchema": () =>
+          json(200, {
+            catalog: [
+              { name: "a", type: "postgresql", jdbc: { username: "u", password: "pw-alpha-1" } },
+              { name: "b", type: "postgresql", jdbc: { username: "u", password: "pw-alpha-1" } },
+            ],
+            ...templateSchema(),
+          }),
+        "POST /schema": () =>
+          json(400, { ok: false, error: 'Failed to parse schema: proto: (line 1:2): unknown field "catalogs"' }),
+      }));
+      await connect(rest);
+
+      const { body, raw } = await callTool("puppygraph_upload_schema", { schema: twoCatalogs });
+
+      expect(body.error_type).toBe("UPSTREAM_ERROR");
+      expect(body.error).toContain("masked or missing catalog credentials");
+      expect(rest.called("POST", "/schema")).toHaveLength(1);
+      expect(raw).not.toContain("pw-alpha-1");
+      expect(raw).not.toContain("pw-bravo-2");
     });
   });
 

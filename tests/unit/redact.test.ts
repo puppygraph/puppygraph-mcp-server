@@ -31,6 +31,31 @@ describe("credential redaction", () => {
     });
   });
 
+  it("masks account-key fields without over-matching paths and ids", () => {
+    expect(
+      maskSecrets({
+        azure: { accountName: "acct", accountKey: "azure-key-1234" },
+        bigquery: {
+          serviceAccountKey: "gcp-key-1234",
+          serviceAccountKeyJson: "{\"private_key\": \"x\"}",
+          serviceAccountKeyFile: "/etc/keys/sa.json",
+          account_key: "snake-key-1234",
+        },
+      }),
+    ).toEqual({
+      azure: { accountName: "acct", accountKey: "******" },
+      bigquery: {
+        serviceAccountKey: "******",
+        serviceAccountKeyJson: "******",
+        serviceAccountKeyFile: "/etc/keys/sa.json",
+        account_key: "******",
+      },
+    });
+    expect(
+      collectSecrets({ options: { accountKey: "azure-key-1234", serviceAccountKeyFile: "/p" } }),
+    ).toEqual(["azure-key-1234"]);
+  });
+
   it("redacts credentials embedded in URIs", () => {
     expect(redactUri("jdbc:mysql://admin:hunter22@db:3306/app")).toBe(
       "jdbc:mysql://admin:******@db:3306/app",
