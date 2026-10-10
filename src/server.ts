@@ -1,6 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  PuppyGraphRestClient,
+  type PuppyGraphRestLike,
+} from "./clients/rest.js";
+import { registerSetupTools } from "./setup/tools.js";
+import { loadRestConfig } from "./utils/config.js";
+import {
   findWriteOperation,
   isReadOnly,
   readOnlyErrorMessage,
@@ -41,6 +47,8 @@ const SCHEMA_DESCRIPTION =
   "Get schema and structure information about the PuppyGraph database";
 const STATUS_DESCRIPTION =
   "Get connection status and configuration information for PuppyGraph";
+const READ_ONLY_STATUS_DESCRIPTION =
+  `${STATUS_DESCRIPTION}. The server is in read-only mode: the tools that create catalogs and upload schemas are disabled.`;
 
 const querySchema = {
   query: z.string().describe("The query to execute (Gremlin or Cypher)"),
@@ -168,7 +176,7 @@ function registerToolSet(
   server.registerTool(
     `${prefix}puppygraph_status`,
     {
-      description: STATUS_DESCRIPTION,
+      description: readOnly ? READ_ONLY_STATUS_DESCRIPTION : STATUS_DESCRIPTION,
       inputSchema: emptyInputSchema,
     },
     async (_args, _extra) => {
@@ -212,6 +220,7 @@ export function createPuppyGraphServer(
   service: PuppyGraphServiceLike,
   environment: NodeJS.ProcessEnv = process.env,
   readOnly: boolean = isReadOnly(environment),
+  rest: PuppyGraphRestLike = new PuppyGraphRestClient(loadRestConfig(environment)),
 ): McpServer {
   const server = new McpServer({
     name: "puppygraph",
@@ -225,6 +234,9 @@ export function createPuppyGraphServer(
 
   registerToolSet(server, service, environment, readOnly, "");
   registerToolSet(server, service, environment, readOnly, "mcp__");
+  // Catalog and schema setup tools. Only unprefixed: the mcp__ aliases exist
+  // for clients of 1.0.0, which had no setup tools.
+  registerSetupTools(server, rest, { readOnly, environment });
 
   return server;
 }
