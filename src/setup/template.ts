@@ -73,6 +73,7 @@ export const SCHEMA_TEMPLATE_NOTES = [
   "A node needs at least one id column. An edge needs fromKey and toKey, holding the ids of its fromNodeLabel and toNodeLabel nodes; its id is optional when the table has no unique key column.",
   "Column types: String, Int, Long, Float, Double, Boolean, Date, DateTime. Use the schemaType that puppygraph_describe_table reports for the source column.",
   "Labels must be unique across nodes and edges.",
+  "Choose ids and edges from the data, not from names alone: a node id should be a pk_candidate in puppygraph_profile_column, and an edge's fromKey/toKey columns should pass puppygraph_check_join (hit_rate near 1.0).",
   "In queries, id columns are not properties: use id(n) in Cypher (it returns 'Label[value]', e.g. 'Account[1]'), not n.id. Attributes are properties (n.name).",
   "Check the schema with puppygraph_validate_schema, then install it with puppygraph_upload_schema.",
   "Docs: https://docs.puppygraph.com/modeling/building-a-graph/ and, for 0.x schemas, https://docs.puppygraph.com/modeling/migrating-from-v0/",
