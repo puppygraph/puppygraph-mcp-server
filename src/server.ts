@@ -335,7 +335,7 @@ function registerResources(
     async (uri) => {
       let value: unknown;
       try {
-        value = await service.getDataSources();
+        value = compactLargeSchema(await service.getDataSources());
       } catch (error: any) {
         const safeError = safeToolError(error, "schema");
         console.error(`Schema resource failed error_type=${errorCategory(error)}`);

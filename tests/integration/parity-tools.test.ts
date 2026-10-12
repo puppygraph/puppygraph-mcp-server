@@ -127,8 +127,14 @@ let client: Client | undefined;
 let server: McpServer | undefined;
 
 function makeService(cypher?: (query: string) => Array<Record<string, unknown>>): PuppyGraphServiceLike {
+  // By default Gremlin's g.E() count agrees with Cypher's raw count, as on 1.14.
+  const edgeRows = (query: string) => {
+    const label = /hasLabel\("([^"]+)"\)\.count\(\)/.exec(query)?.[1];
+    const rows = label ? (cypher ? cypher(`MATCH ()-[r:\`${label}\`]->() RETURN count(r) AS n`) : [{ n: 1 }]) : [];
+    return { data: [Number(Object.values(rows[0] ?? {})[0] ?? 0)] };
+  };
   return {
-    executeGremlin: vi.fn(),
+    executeGremlin: vi.fn(async ({ query }: { query: string }) => edgeRows(query)) as any,
     executeCypher: vi.fn(async ({ query }: { query: string }) => ({ data: cypher ? cypher(query) : [{ n: 1 }] })),
     getDataSources: vi.fn(),
     getConnectionStatus: vi.fn().mockReturnValue({
@@ -425,6 +431,11 @@ describe("schema navigation", () => {
     expect(body.schema.node_labels).toHaveLength(400);
     expect(body.schema.relationships).toEqual(["(Customer)-[:PLACED]->(Order)"]);
     expect(body.schema.note).toContain("puppygraph_search_schema");
+
+    const resource = await client!.readResource({ uri: "puppygraph://schema" });
+    const viaResource = JSON.parse((resource.contents[0] as any).text);
+    expect(viaResource.schema.node_labels).toHaveLength(400);
+    expect(viaResource.schema.node).toBeUndefined();
   });
 });
 
@@ -495,6 +506,21 @@ describe("per-element schema edits", () => {
     await connect(rest);
     const { body } = await callTool("puppygraph_add_node", { node: order });
     expect(body.error).toContain("Could not read the installed schema's version");
+    expect(rest.called("POST", "/schema")).toHaveLength(0);
+  });
+
+  it("treats a change that lands between reading the version and the schema as a conflict", async () => {
+    const { rest, state } = puppygraph({ schema: { node: [customer], edge: [] } });
+    // Another writer installs a new version right when the schema is read.
+    const routes = (rest as any).routes;
+    const readSchema = routes["GET /schemajson"];
+    routes["GET /schemajson"] = (options: RestRequest) => {
+      state.version += 1;
+      return readSchema(options);
+    };
+    await connect(rest);
+    const { body } = await callTool("puppygraph_add_node", { node: order });
+    expect(body.error_type).toBe("CONFLICT");
     expect(rest.called("POST", "/schema")).toHaveLength(0);
   });
 
@@ -605,6 +631,17 @@ describe("check_edges", () => {
     expect(body.nodes[1].note).toContain("isn't unique");
     expect(body.edges[0]).toMatchObject({ status: "suspect", reach_target: 6 });
     expect(body.summary).toContain("nodes with duplicate ids: Order");
+  });
+
+  it("calls an edge inconclusive, not ok, when Gremlin can't count its rows", async () => {
+    // Cypher alone would say 200/200/200 here; on newer servers that hides dangling edges.
+    const service = makeService(() => [{ n: 200, d: 200 }]);
+    vi.mocked(service.executeGremlin).mockRejectedValue(new Error("Cannot execute Gremlin query: Not connected"));
+    await connect(puppygraph({ schema: { node: [customer, order], edge: [placed] } }).rest, service);
+    const { body } = await callTool("puppygraph_check_edges");
+    expect(body.edges[0]).toMatchObject({ label: "PLACED", status: "inconclusive", rows: null });
+    expect(body.edges[0].note).toContain("couldn't be counted independently of the nodes");
+    expect(body.summary).toContain("edges that couldn't be checked: PLACED");
   });
 
   it("rejects unknown labels", async () => {

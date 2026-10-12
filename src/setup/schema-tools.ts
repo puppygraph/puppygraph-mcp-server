@@ -154,39 +154,52 @@ async function gremlinCount(gremlin: GremlinRunner, traversal: string): Promise<
  * both, so when Cypher sees fewer edges than that, the sides come from
  * Gremlin; otherwise from Cypher.
  */
-async function edgeCounts(query: CypherRunner, gremlin: GremlinRunner | undefined, edge: any) {
+async function edgeCounts(query: CypherRunner, gremlin: GremlinRunner | undefined, edge: any): Promise<EdgeCounts> {
   const rel = quote(cypherLabels(edge)[0]);
   const from = quote(edge.fromNodeLabel);
   const to = quote(edge.toNodeLabel);
-  const cypherRows = await count(query, `MATCH ()-[r:${rel}]->() RETURN count(r) AS n`);
+  // Gremlin's g.E() is the only count of the edge rows that doesn't depend on
+  // the nodes existing, so without it the check can't conclude anything:
+  // falling back to Cypher would report a broken mapping as fine on servers
+  // where Cypher drops edges with a missing endpoint.
   let gremlinLabel: string | undefined;
   let gremlinRows: number | undefined;
   if (gremlin) {
     for (const label of [...new Set([edge.label, ...cypherLabels(edge)])]) {
       const value = await gremlinCount(gremlin, `g.E().hasLabel(${JSON.stringify(String(label))}).count()`);
-      if (value !== undefined && value > 0) {
+      if (value !== undefined && (gremlinRows === undefined || value > gremlinRows)) {
         gremlinLabel = label;
         gremlinRows = value;
-        break;
       }
     }
   }
-  if (gremlin && gremlinLabel && gremlinRows !== undefined && gremlinRows > cypherRows) {
-    const label = JSON.stringify(gremlinLabel);
-    const fromHits = await gremlinCount(gremlin, `g.V().hasLabel(${JSON.stringify(String(edge.fromNodeLabel))}).outE(${label}).count()`);
-    const toHits = await gremlinCount(gremlin, `g.V().hasLabel(${JSON.stringify(String(edge.toNodeLabel))}).inE(${label}).count()`);
-    if (fromHits !== undefined && toHits !== undefined) {
-      return { rows: gremlinRows, fromHits, toHits };
-    }
+  if (gremlinLabel === undefined || gremlinRows === undefined) {
+    return {
+      inconclusive: gremlin
+        ? "The Gremlin endpoint didn't answer, so the edge rows couldn't be counted independently of the nodes."
+        : "This MCP server has no Gremlin connection, so the edge rows couldn't be counted independently of the nodes.",
+    };
   }
-  const rows = Math.max(cypherRows, gremlinRows ?? 0);
-  if (rows === 0) return { rows, fromHits: 0, toHits: 0 };
+  if (gremlinRows === 0) return { rows: 0, fromHits: 0, toHits: 0 };
+  const cypherRows = await count(query, `MATCH ()-[r:${rel}]->() RETURN count(r) AS n`);
+  if (gremlinRows > cypherRows) {
+    // Cypher drops edges with a missing endpoint: count each side with Gremlin.
+    const label = JSON.stringify(gremlinLabel);
+    const fromHits = await gremlinCount(gremlin!, `g.V().hasLabel(${JSON.stringify(String(edge.fromNodeLabel))}).outE(${label}).count()`);
+    const toHits = await gremlinCount(gremlin!, `g.V().hasLabel(${JSON.stringify(String(edge.toNodeLabel))}).inE(${label}).count()`);
+    if (fromHits === undefined || toHits === undefined) {
+      return { inconclusive: "The Gremlin endpoint stopped answering while counting the edge's endpoints." };
+    }
+    return { rows: gremlinRows, fromHits, toHits };
+  }
   return {
-    rows,
+    rows: gremlinRows,
     fromHits: await count(query, `MATCH (a:${from}) WITH a MATCH (a)-[r:${rel}]->() RETURN count(r) AS n`),
     toHits: await count(query, `MATCH (b:${to}) WITH b MATCH ()-[r:${rel}]->(b) RETURN count(r) AS n`),
   };
 }
+
+type EdgeCounts = { rows: number; fromHits: number; toHits: number; inconclusive?: undefined } | { inconclusive: string };
 
 // One schema change at a time per PuppyGraph from this server: each change
 // reads the whole schema and writes it back.
@@ -368,7 +381,22 @@ export function registerSchemaTools(
 
       const results = [];
       for (const edge of edges) {
-        const { rows, fromHits, toHits } = await edgeCounts(query, gremlin, edge);
+        const counted = await edgeCounts(query, gremlin, edge);
+        if (counted.inconclusive !== undefined) {
+          results.push({
+            label: edge.label,
+            pattern: `(:${edge.fromNodeLabel})-[:${cypherLabels(edge)[0]}]->(:${edge.toNodeLabel})`,
+            rows: null,
+            reach_source: null,
+            reach_target: null,
+            source_hit_rate: null,
+            target_hit_rate: null,
+            status: "inconclusive",
+            note: `${counted.inconclusive} Not checked; don't report this edge as verified.`,
+          });
+          continue;
+        }
+        const { rows, fromHits, toHits } = counted;
         const share = (hits: number) => (rows === 0 ? null : Math.round((hits / rows) * 1000) / 1000);
         let status: string;
         let note: string;
@@ -404,13 +432,15 @@ export function registerSchemaTools(
           note,
         });
       }
-      const problems = results.filter((result) => result.status !== "ok").map((result) => result.label);
+      const problems = results.filter((result) => !["ok", "inconclusive"].includes(result.status)).map((result) => result.label);
+      const unchecked = results.filter((result) => result.status === "inconclusive").map((result) => result.label);
       const duplicateNodes = nodes.filter((node) => node.distinct_ids < node.rows).map((node) => node.label);
       const emptyNodes = nodes.filter((node) => node.rows === 0).map((node) => node.label);
       const findings = [
         ...(problems.length ? [`edges to look at: ${problems.join(", ")}`] : []),
         ...(duplicateNodes.length ? [`nodes with duplicate ids: ${duplicateNodes.join(", ")}`] : []),
         ...(emptyNodes.length ? [`nodes with no rows: ${emptyNodes.join(", ")}`] : []),
+        ...(unchecked.length ? [`edges that couldn't be checked: ${unchecked.join(", ")}`] : []),
       ];
       return {
         edges: results,
@@ -443,8 +473,10 @@ export function registerSchemaTools(
     change: (schema: Schema) => void,
     log: (message: string) => void,
   ) => {
-    const live = await readLive();
+    // The version first: a change that lands between the two reads then shows
+    // up as a version mismatch below instead of being overwritten.
     const before = await liveVersion(rest);
+    const live = await readLive();
     if (before === null && (live.node.length > 0 || live.edge.length > 0)) {
       throw new SetupError(
         "UPSTREAM_ERROR",
