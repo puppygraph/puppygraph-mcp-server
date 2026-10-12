@@ -243,6 +243,20 @@ describe("create_catalog guidance", () => {
     expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
   });
 
+  it("rejects a required select set to an empty string", async () => {
+    const { rest } = puppygraph();
+    await connect(rest);
+    const { body } = await callTool("puppygraph_create_catalog", {
+      name: "pg",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://pg:5432/shop",
+      options: { jdbcPostgresAuthMode: "" },
+    });
+    expect(body.error_type).toBe("INVALID_INPUT");
+    expect(body.error).toContain("missing jdbcPostgresAuthMode");
+    expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
+  });
+
   it("accepts a complete Iceberg REST + S3 catalog and keeps the secret out of the result", async () => {
     const { rest } = puppygraph({
       overrides: { "POST /ui-api/catalog": ({ body }: any) => json(200, { catalogs: [{ name: "lake", type: "iceberg", storage: { secretKey: body.catalogs[0].storageSecretKey } }] }) },
