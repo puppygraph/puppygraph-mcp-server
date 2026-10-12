@@ -786,6 +786,154 @@ describe("discovery: instructions and resources", () => {
   });
 });
 
+describe("data probing tools", () => {
+  const accounts = { catalog: "pg", database: "public", table: "accounts" };
+
+  it("samples rows and returns each row as an array aligned with columns", async () => {
+    const rest = new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/sample-rows": () =>
+        json(200, {
+          columns: ["account_id", "name"],
+          row_json: ['[1,"alice"]', '[9007199254740993,"x\\"12345678901234567890",1.12345678901234567,1e-12345678901234567]'],
+          truncated: true,
+          ok: true,
+          error_message: "",
+        }),
+    }));
+    await connect(rest);
+
+    const { body, isError } = await callTool("puppygraph_sample_table", { ...accounts, limit: 2 });
+
+    expect(isError).toBe(false);
+    expect(body).toEqual({
+      ...accounts,
+      columns: ["account_id", "name"],
+      rows: [[1, "alice"], ["9007199254740993", 'x"12345678901234567890', 1.12345678901234567, 0]],
+      truncated: true,
+    });
+    expect(rest.called("POST", "/ui-api/catalog/probe/sample-rows")[0].options.body).toEqual({ ...accounts, limit: 2 });
+  });
+
+  it("profiles a column and counts rows", async () => {
+    const profile = {
+      total_count: 3,
+      null_count: 0,
+      distinct_count: 3,
+      cardinality_class: "unique",
+      looks_like: ["pk_candidate"],
+      sample_values: ["1", "2", "3"],
+      min: "1",
+      max: "3",
+    };
+    const rest = new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/column-profile": () => json(200, profile),
+      "POST /ui-api/catalog/probe/row-count": () =>
+        json(200, { row_count: "3", is_approximate: false, ok: true, error_message: "" }),
+    }));
+    await connect(rest);
+
+    const profiled = await callTool("puppygraph_profile_column", { ...accounts, column: "account_id" });
+    const counted = await callTool("puppygraph_table_row_count", accounts);
+
+    expect(profiled.body).toEqual({ ...accounts, column: "account_id", ...profile });
+    expect(rest.called("POST", "/ui-api/catalog/probe/column-profile")[0].options.body).toEqual({ ...accounts, column: "account_id" });
+    expect(counted.body).toEqual({ ...accounts, row_count: 3, approximate: false });
+  });
+
+  it("checks a join and returns the ranked candidates", async () => {
+    const candidates = [{ to: "accounts.account_id", hit_rate: 1, from_keys: 3, to_keys: 3, unmatched_samples: [] }];
+    const rest = new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/join-check": () => json(200, { candidates }),
+    }));
+    await connect(rest);
+    const from = { catalog: "pg", database: "public", table: "account_devices", column: "account_id" };
+
+    const { body } = await callTool("puppygraph_check_join", { from, to: accounts });
+
+    expect(body).toEqual({ from, to: accounts, candidates });
+    expect(rest.called("POST", "/ui-api/catalog/probe/join-check")[0].options.body).toEqual({ from, to: accounts });
+  });
+
+  it("tells the agent to fall back to names when PuppyGraph has no probe endpoints", async () => {
+    await connect(new FakeRest(baseRoutes()));
+
+    const { body, isError } = await callTool("puppygraph_profile_column", { ...accounts, column: "account_id" });
+
+    expect(isError).toBe(true);
+    expect(body.error_type).toBe("NOT_SUPPORTED");
+    expect(body.error).toContain("unverified");
+  });
+
+  it("returns a row count beyond 2^53 exactly", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/row-count": () =>
+        json(200, { row_count: "9007199254740993", is_approximate: false, ok: true, error_message: "" }),
+    })));
+
+    const { body } = await callTool("puppygraph_table_row_count", accounts);
+
+    expect(body.row_count).toBe("9007199254740993");
+  });
+
+  it("reports an unknown catalog as NOT_FOUND, not as an old PuppyGraph", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/row-count": () =>
+        json(404, { ok: false, code: "catalog_not_found", message: 'catalog "nope" not found' }),
+    })));
+
+    const { body } = await callTool("puppygraph_table_row_count", { ...accounts, catalog: "nope" });
+
+    expect(body.error_type).toBe("NOT_FOUND");
+    expect(body.error).toContain('catalog "nope" not found');
+  });
+
+  it("names DATA:read when the user may not read data", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/sample-rows": () =>
+        json(403, { status: "error", message: "permission denied: requires DATA:read" }),
+    })));
+
+    const { body } = await callTool("puppygraph_sample_table", accounts);
+
+    expect(body.error_type).toBe("PERMISSION_DENIED");
+    expect(body.error).toContain("needs the DATA:read permission");
+  });
+
+  it("passes on refusals for row-level security and counts-only servers", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/column-profile": () =>
+        json(403, {
+          ok: false,
+          code: "row_level_security",
+          message: 'catalog "pg" backs a graph with row-level security; only administrators can probe its data',
+        }),
+      "POST /ui-api/catalog/probe/sample-rows": () =>
+        json(403, { ok: false, code: "counts_only", message: "returning source rows is turned off on this server" }),
+    })));
+
+    const profiled = await callTool("puppygraph_profile_column", { ...accounts, column: "name" });
+    const sampled = await callTool("puppygraph_sample_table", accounts);
+
+    expect(profiled.body.error_type).toBe("PERMISSION_DENIED");
+    expect(profiled.body.error).toContain("only administrators can probe its data");
+    expect(sampled.body.error_type).toBe("PERMISSION_DENIED");
+    expect(sampled.body.error).toContain("returning source rows is turned off");
+  });
+
+  it("reports a probe that PuppyGraph answered with ok false as an error", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/row-count": () =>
+        json(200, { row_count: "0", is_approximate: false, ok: false, error_message: "table not found" }),
+    })));
+
+    const { body, isError } = await callTool("puppygraph_table_row_count", accounts);
+
+    expect(isError).toBe(true);
+    expect(body.error_type).toBe("UPSTREAM_ERROR");
+    expect(body.error).toContain("table not found");
+  });
+});
+
 describe("setup tools in read-only mode", () => {
   it("does not register the write tools and keeps the read tools", async () => {
     await connect(new FakeRest(baseRoutes()), { PUPPYGRAPH_READ_ONLY: "true" });
@@ -799,6 +947,10 @@ describe("setup tools in read-only mode", () => {
       "puppygraph_test_catalog",
       "puppygraph_list_tables",
       "puppygraph_describe_table",
+      "puppygraph_sample_table",
+      "puppygraph_profile_column",
+      "puppygraph_table_row_count",
+      "puppygraph_check_join",
       "puppygraph_schema_template",
       "puppygraph_validate_schema",
     ]));

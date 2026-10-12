@@ -25,13 +25,28 @@ Setup tools, to go from an empty PuppyGraph to a graph you can query:
 | `puppygraph_test_catalog` | Checks that PuppyGraph can read data through a catalog |
 | `puppygraph_list_tables` | Lists a catalog's databases, or the tables in one of them |
 | `puppygraph_describe_table` | Lists a table's columns and their PuppyGraph types |
+| `puppygraph_sample_table` | Returns a few rows of a table |
+| `puppygraph_profile_column` | Profiles a column: null and distinct counts, whether it can be an id or references another table |
+| `puppygraph_table_row_count` | Counts the rows of a table |
+| `puppygraph_check_join` | Checks from the data how many values of one column exist in another table's column |
 | `puppygraph_schema_template` | Returns an annotated example of a 1.x graph schema |
 | `puppygraph_validate_schema` | Dry-runs a schema: checks its structure and that its tables and columns exist, without changing anything |
 | `puppygraph_upload_schema` | Installs a schema; replacing an installed schema needs `replace: true` |
 
 `puppygraph_create_catalog` and `puppygraph_upload_schema` change PuppyGraph and are not available in [read-only mode](#read-only-mode). The setup tools need PuppyGraph 1.x and use its HTTP API on port 8081.
 
-When PuppyGraph can't be reached, the tools return an error. They never return sample data.
+When PuppyGraph can't be reached, the tools return an error. They never return made-up data.
+
+### Data probing
+
+`puppygraph_sample_table`, `puppygraph_profile_column`, `puppygraph_table_row_count` and `puppygraph_check_join` read the source tables, so the agent picks ids and edges from the data rather than from column names alone. They are the same probes the PuppyGraph web UI's AI assistant uses, and they need a PuppyGraph release newer than 1.14. On older versions they return `error_type: "NOT_SUPPORTED"`, and the agent falls back to column names and types and should say that its keys and joins are unverified.
+
+- Sample rows, sample values and min/max values go into the conversation with the agent's model.
+- The PuppyGraph user needs the `DATA:read` permission.
+- On a catalog used by a graph with row-level security, only administrators can probe, because probes read the tables without the row filters.
+- A PuppyGraph server can be set to return counts only: `puppygraph_sample_table` is then refused, and the other probes return counts without values.
+
+They only read, so they stay available in read-only mode.
 
 The server also exposes two read-only resources, `puppygraph://guide` (which tools to call, in what order) and `puppygraph://schema` (the current graph schema), and sends the same guidance as its MCP `instructions`, so clients that look at resources or instructions first find the tools.
 

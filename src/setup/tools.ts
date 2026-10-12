@@ -33,6 +33,7 @@ export type SetupErrorCode =
   | "REPLACE_REQUIRED"
   | "AUTHENTICATION_FAILED"
   | "PERMISSION_DENIED"
+  | "NOT_SUPPORTED"
   | "CONNECTION_FAILED"
   | "TIMEOUT"
   | "HOST_UNREACHABLE_FROM_PUPPYGRAPH"
@@ -74,6 +75,11 @@ const CATALOG_TYPES_HINT =
 
 const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const CATALOG_TIMEOUT_MS = 5 * 60_000;
+// PuppyGraph gives up on a probe after 1 minute (sample), 5 minutes (profile,
+// row count) or 10 minutes (join check); wait a little longer than that.
+const SAMPLE_TIMEOUT_MS = 90_000;
+const PROFILE_TIMEOUT_MS = 6 * 60_000;
+const JOIN_TIMEOUT_MS = 11 * 60_000;
 
 function textResult(value: unknown, isError = false) {
   return {
@@ -135,6 +141,59 @@ async function call(
     throw errorFromResponse(response, action, secrets);
   }
   return response.body;
+}
+
+async function probe(
+  rest: PuppyGraphRestLike,
+  route: string,
+  action: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<any> {
+  const response = await rest.request("POST", `/ui-api/catalog/probe/${route}`, { body, timeoutMs });
+  const result = response.body as any;
+  const code = result?.code;
+  if (response.status === 404 && code !== "catalog_not_found") {
+    throw new SetupError(
+      "NOT_SUPPORTED",
+      "This PuppyGraph version can't probe source data (the probe endpoints came after 1.14). Choose ids and edges from the column names and types in puppygraph_describe_table, and tell the user that the keys and joins are unverified.",
+    );
+  }
+  if (!response.ok) {
+    const message = responseError(response.body, []);
+    if (code === "catalog_not_found") {
+      throw new SetupError("NOT_FOUND", `${message}. List the catalogs with puppygraph_list_catalogs.`);
+    }
+    if (code === "invalid_request") {
+      throw new SetupError("INVALID_INPUT", message);
+    }
+    if (response.status === 403 && code === undefined) {
+      throw new SetupError(
+        "PERMISSION_DENIED",
+        `Not allowed to ${action}: ${message}. Probing source data needs the DATA:read permission; without it, choose ids and edges from column names and types and tell the user they are unverified.`,
+      );
+    }
+    throw errorFromResponse(response, action, []);
+  }
+  if (result?.ok === false) {
+    throw new SetupError("UPSTREAM_ERROR", `Failed to ${action}: ${responseError(result.error_message || "no details", [])}`);
+  }
+  return result;
+}
+
+// Integers past 2^53 (e.g. BIGINT ids) come back as strings, so the agent
+// sees the exact value.
+function exactInteger(digits: string): number | string {
+  const value = Number(digits);
+  return Number.isSafeInteger(value) ? value : digits;
+}
+
+function parseRow(row: string): unknown {
+  return JSON.parse(
+    row.replace(/"(?:[^"\\]|\\.)*"|(?<![\d.eE+-])-?\d{16,}(?![.\deE])/g, (token) =>
+      token.startsWith('"') || Number.isSafeInteger(Number(token)) ? token : `"${token}"`,
+    ),
+  );
 }
 
 async function listCatalogNames(rest: PuppyGraphRestLike): Promise<any[]> {
@@ -506,6 +565,125 @@ export function registerSetupTools(
           { query: { catalogName: catalog, databaseName: database, tableName: table } },
         );
         return { catalog, database, table, columns: body?.column ?? [] };
+      },
+    ),
+  );
+
+  const tableInput = {
+    catalog: z.string().min(1).describe("Catalog name"),
+    database: z.string().min(1).describe("Database or schema name"),
+    table: z.string().min(1).describe("Table name"),
+  };
+
+  server.registerTool(
+    "puppygraph_sample_table",
+    {
+      description:
+        "Return a few real rows of a table (default 10, at most 100), to tell id-shaped columns from free text and spot enums before mapping the table. The rows go into the conversation, so ask for only the columns you need.",
+      inputSchema: {
+        ...tableInput,
+        columns: z.array(z.string().min(1)).optional().describe("Columns to return; all columns when omitted"),
+        limit: z.number().int().min(1).max(100).optional().describe("Number of rows, default 10"),
+      },
+    },
+    runTool(
+      "puppygraph_sample_table",
+      async (args: { catalog: string; database: string; table: string; columns?: string[]; limit?: number }) => {
+        const { catalog, database, table } = args;
+        const body = await probe(
+          rest,
+          "sample-rows",
+          `sample '${catalog}.${database}.${table}'`,
+          { catalog, database, table, ...(args.columns ? { columns: args.columns } : {}), ...(args.limit ? { limit: args.limit } : {}) },
+          SAMPLE_TIMEOUT_MS,
+        );
+        const columns: string[] = Array.isArray(body?.columns) ? body.columns : [];
+        const rows = (Array.isArray(body?.row_json) ? body.row_json : []).map(parseRow);
+        return { catalog, database, table, columns, rows, truncated: body?.truncated === true };
+      },
+    ),
+  );
+
+  server.registerTool(
+    "puppygraph_profile_column",
+    {
+      description:
+        "Profile one column from its data: total, null and distinct counts, cardinality_class (unique, high, medium, low or binary) and looks_like hints (pk_candidate, fk_candidate, enum, measure, free_text, timestamp, json), plus up to 20 sample values and min/max unless the server returns counts only. A node id should be a pk_candidate: unique and never null. Use this to decide which column is a table's id, which ones reference other tables, and which are attributes. It scans the whole column, so it can take minutes on large tables.",
+      inputSchema: { ...tableInput, column: z.string().min(1).describe("Column name") },
+    },
+    runTool(
+      "puppygraph_profile_column",
+      async ({ catalog, database, table, column }: { catalog: string; database: string; table: string; column: string }) => {
+        const profile = await probe(
+          rest,
+          "column-profile",
+          `profile '${catalog}.${database}.${table}.${column}'`,
+          { catalog, database, table, column },
+          PROFILE_TIMEOUT_MS,
+        );
+        return { catalog, database, table, column, ...profile };
+      },
+    ),
+  );
+
+  server.registerTool(
+    "puppygraph_table_row_count",
+    {
+      description:
+        "Count the rows of a table. Helps tell entity tables (nodes) from event and link tables (often edges), and judge how long profiling will take.",
+      inputSchema: tableInput,
+    },
+    runTool(
+      "puppygraph_table_row_count",
+      async ({ catalog, database, table }: { catalog: string; database: string; table: string }) => {
+        const body = await probe(
+          rest,
+          "row-count",
+          `count the rows of '${catalog}.${database}.${table}'`,
+          { catalog, database, table },
+          PROFILE_TIMEOUT_MS,
+        );
+        return { catalog, database, table, row_count: exactInteger(String(body?.row_count)), approximate: body?.is_approximate === true };
+      },
+    ),
+  );
+
+  const columnRef = z.object({
+    catalog: z.string().min(1),
+    database: z.string().min(1),
+    table: z.string().min(1),
+    column: z.string().min(1),
+  });
+
+  server.registerTool(
+    "puppygraph_check_join",
+    {
+      description:
+        "Check from the data whether a column references another table: samples distinct values of from.column and counts how many exist in to.column. Without to.column, tries the type-compatible columns of to.table and ranks them. Returns candidates with hit_rate (share of sampled values found), from_keys and to_keys (distinct counts), and up to 5 values that were not found (unless the server returns counts only). Check every edge this way before putting it in a schema; never present a join you did not check as verified. A hit_rate near 1.0 is a foreign key; below about 0.95 it is a soft reference, so tell the user the evidence. Independent checks can run in parallel. It can take minutes on large tables.",
+      inputSchema: {
+        from: columnRef.describe("The referencing column, e.g. orders.customer_id"),
+        to: columnRef
+          .extend({ column: z.string().min(1).optional() })
+          .describe("The referenced table and, if known, its key column, e.g. customers.id"),
+        max_candidates: z.number().int().min(1).max(25).optional().describe("Without to.column: how many candidate columns to return, default 5"),
+      },
+    },
+    runTool(
+      "puppygraph_check_join",
+      async (args: {
+        from: { catalog: string; database: string; table: string; column: string };
+        to: { catalog: string; database: string; table: string; column?: string };
+        max_candidates?: number;
+      }) => {
+        const { from, to } = args;
+        const body = await probe(
+          rest,
+          "join-check",
+          `check '${from.table}.${from.column}' against '${to.table}${to.column ? `.${to.column}` : ""}'`,
+          { from, to, ...(args.max_candidates ? { max_candidates: args.max_candidates } : {}) },
+          JOIN_TIMEOUT_MS,
+        );
+        return { from, to, candidates: Array.isArray(body?.candidates) ? body.candidates : [] };
       },
     ),
   );
