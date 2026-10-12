@@ -134,19 +134,69 @@ const quote = (label: string) => "`" + String(label).replace(/`/g, "``") + "`";
  * rows (1.14) or only edges whose endpoints exist (later). Gremlin's g.E()
  * counts the rows on both, so it is asked first.
  */
-async function edgeRows(query: CypherRunner, gremlin: GremlinRunner | undefined, edge: any): Promise<number> {
+async function gremlinCount(gremlin: GremlinRunner, traversal: string): Promise<number | undefined> {
+  try {
+    const result = await gremlin(traversal);
+    const value = Array.isArray(result) ? Number(result[0]) : NaN;
+    return Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Counts an edge's rows and how many reach an existing source and target
+ * node, each side on its own. PuppyGraph versions differ: up to 1.14 Cypher
+ * counts every edge row and a node scan on one side checks that side alone,
+ * while Gremlin doesn't look the nodes up; later versions drop edges whose
+ * endpoints don't exist from every Cypher match, while Gremlin's
+ * g.V().hasLabel().outE() checks one side. Gremlin's g.E() counts the rows on
+ * both, so when Cypher sees fewer edges than that, the sides come from
+ * Gremlin; otherwise from Cypher.
+ */
+async function edgeCounts(query: CypherRunner, gremlin: GremlinRunner | undefined, edge: any) {
+  const rel = quote(cypherLabels(edge)[0]);
+  const from = quote(edge.fromNodeLabel);
+  const to = quote(edge.toNodeLabel);
+  const cypherRows = await count(query, `MATCH ()-[r:${rel}]->() RETURN count(r) AS n`);
+  let gremlinLabel: string | undefined;
+  let gremlinRows: number | undefined;
   if (gremlin) {
-    for (const label of [edge.label, ...cypherLabels(edge)]) {
-      try {
-        const result = await gremlin(`g.E().hasLabel(${JSON.stringify(String(label))}).count()`);
-        const value = Array.isArray(result) ? Number(result[0]) : NaN;
-        if (Number.isFinite(value) && value > 0) return value;
-      } catch {
-        // fall back to Cypher
+    for (const label of [...new Set([edge.label, ...cypherLabels(edge)])]) {
+      const value = await gremlinCount(gremlin, `g.E().hasLabel(${JSON.stringify(String(label))}).count()`);
+      if (value !== undefined && value > 0) {
+        gremlinLabel = label;
+        gremlinRows = value;
+        break;
       }
     }
   }
-  return count(query, `MATCH ()-[r:${quote(cypherLabels(edge)[0])}]->() RETURN count(r) AS n`);
+  if (gremlin && gremlinLabel && gremlinRows !== undefined && gremlinRows > cypherRows) {
+    const label = JSON.stringify(gremlinLabel);
+    const fromHits = await gremlinCount(gremlin, `g.V().hasLabel(${JSON.stringify(String(edge.fromNodeLabel))}).outE(${label}).count()`);
+    const toHits = await gremlinCount(gremlin, `g.V().hasLabel(${JSON.stringify(String(edge.toNodeLabel))}).inE(${label}).count()`);
+    if (fromHits !== undefined && toHits !== undefined) {
+      return { rows: gremlinRows, fromHits, toHits };
+    }
+  }
+  const rows = Math.max(cypherRows, gremlinRows ?? 0);
+  if (rows === 0) return { rows, fromHits: 0, toHits: 0 };
+  return {
+    rows,
+    fromHits: await count(query, `MATCH (a:${from}) WITH a MATCH (a)-[r:${rel}]->() RETURN count(r) AS n`),
+    toHits: await count(query, `MATCH (b:${to}) WITH b MATCH ()-[r:${rel}]->(b) RETURN count(r) AS n`),
+  };
+}
+
+// One schema change at a time per PuppyGraph from this server: each change
+// reads the whole schema and writes it back.
+const schemaLocks = new WeakMap<object, Promise<unknown>>();
+
+export function withSchemaLock<T>(rest: object, task: () => Promise<T>): Promise<T> {
+  const previous = schemaLocks.get(rest) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  schemaLocks.set(rest, run.catch(() => undefined));
+  return run;
 }
 
 /**
@@ -318,12 +368,7 @@ export function registerSchemaTools(
 
       const results = [];
       for (const edge of edges) {
-        const from = quote(edge.fromNodeLabel);
-        const to = quote(edge.toNodeLabel);
-        const rel = quote(cypherLabels(edge)[0]);
-        const rows = await edgeRows(query, gremlin, edge);
-        const fromHits = rows === 0 ? 0 : await count(query, `MATCH (a:${from}) WITH a MATCH (a)-[r:${rel}]->(:${to}) RETURN count(r) AS n`);
-        const toHits = rows === 0 ? 0 : await count(query, `MATCH (b:${to}) WITH b MATCH (:${from})-[r:${rel}]->(b) RETURN count(r) AS n`);
+        const { rows, fromHits, toHits } = await edgeCounts(query, gremlin, edge);
         const share = (hits: number) => (rows === 0 ? null : Math.round((hits / rows) * 1000) / 1000);
         let status: string;
         let note: string;
@@ -387,13 +432,25 @@ export function registerSchemaTools(
    * the elements the change touches, and upload it, unless the schema changed
    * in the meantime.
    */
-  const edit = async (
+  const edit = (
+    touched: string[],
+    change: (schema: Schema) => void,
+    log: (message: string) => void,
+  ) => withSchemaLock(rest, () => applyEdit(touched, change, log));
+
+  const applyEdit = async (
     touched: string[],
     change: (schema: Schema) => void,
     log: (message: string) => void,
   ) => {
     const live = await readLive();
     const before = await liveVersion(rest);
+    if (before === null && (live.node.length > 0 || live.edge.length > 0)) {
+      throw new SetupError(
+        "UPSTREAM_ERROR",
+        "Could not read the installed schema's version, so a concurrent change couldn't be detected; nothing was changed. Try again, or use puppygraph_upload_schema with the whole schema.",
+      );
+    }
     if (live.catalog !== undefined && JSON.stringify(live.catalog).includes(MASK)) {
       // Catalogs come back with masked credentials; uploading them would store
       // the mask. They are registered on the server, so leave them out.
@@ -413,7 +470,7 @@ export function registerSchemaTools(
       });
     }
     const now = await liveVersion(rest);
-    if (before !== null && now !== null && before !== now) {
+    if (before !== now) {
       throw new SetupError(
         "CONFLICT",
         `The installed schema changed while this change was being prepared (version ${before} → ${now}); nothing was changed. Call again to apply it to the new version.`,

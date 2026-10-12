@@ -47,6 +47,14 @@ export const PARAMETER_FIELDS: Record<string, string> = {
   driverUrl: "driver_url",
 };
 
+/** A field required only when another field has one of some values. */
+function requiredIf(field: CatalogFormField): { name: string; values: unknown[] } | undefined {
+  const rule = field.requiredIf as { name?: unknown; values?: unknown } | undefined;
+  return rule && typeof rule.name === "string" && Array.isArray(rule.values)
+    ? { name: rule.name, values: rule.values }
+    : undefined;
+}
+
 export function catalogTypes(): Array<{ type: string; label: string; doc_url?: string }> {
   const typeField = FIELDS.get("catalogType");
   return (typeField?.opts ?? []).map((option) => {
@@ -75,6 +83,7 @@ function describeField(field: CatalogFormField) {
     ...(field.label ? { label: field.label } : {}),
     ...(field.type ? { type: field.type } : {}),
     ...(field.required ? { required: true } : {}),
+    ...(requiredIf(field) ? { required_when: { [requiredIf(field)!.name]: requiredIf(field)!.values } } : {}),
     ...(field.defaultValue !== undefined && field.defaultValue !== "" ? { default: field.defaultValue } : {}),
     ...(field.opts ? { options: field.opts.map((option) => option.value) } : {}),
     ...(field.sensitive ? { sensitive: true } : {}),
@@ -116,14 +125,16 @@ export function catalogSpec(type: string) {
 }
 
 /**
- * The fields that apply to the given values (following the selects and
- * checkboxes that were set, or their defaults), and which required ones are
- * missing. Field names that the form doesn't know are reported separately:
- * the server reads a few fields the form doesn't list, so they are not errors.
+ * The fields that apply to the given values, and which required ones are
+ * missing. Only the selects and checkboxes that were actually set decide
+ * which fields apply: PuppyGraph treats an absent select as its plain case
+ * (e.g. no snowflakeAuthType means a JDBC URI), not as the form's default, so
+ * a required field with a default is not reported missing either. Field
+ * names the form doesn't know are reported separately: the server reads a
+ * few fields the form doesn't list, so they are not errors.
  */
 export function checkCatalogValues(type: string, values: Record<string, unknown>) {
-  const effective = (name: string): unknown =>
-    values[name] !== undefined ? values[name] : FIELDS.get(name)?.defaultValue;
+  const effective = (name: string): unknown => values[name];
   const active = new Set(["catalogType", "catalogName"]);
   for (let changed = true; changed; ) {
     changed = false;
@@ -144,7 +155,13 @@ export function checkCatalogValues(type: string, values: Record<string, unknown>
   }
   const missing = [...active].filter((name) => {
     const field = FIELDS.get(name);
-    if (!field?.required || name === "catalogType" || name === "catalogName") return false;
+    if (!field || name === "catalogType" || name === "catalogName") return false;
+    const conditional = requiredIf(field);
+    const required = field.required === true ||
+      (conditional !== undefined && conditional.values.includes(effective(conditional.name)));
+    if (!required) return false;
+    const fallback = field.defaultValue;
+    if (fallback !== undefined && fallback !== "") return false;
     const value = effective(name);
     return value === undefined || value === "";
   });

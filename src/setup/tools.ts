@@ -20,7 +20,7 @@ import {
 import { collectSecrets, maskSecrets, MASK, scrubText } from "../utils/redact.js";
 import { catalogSpec, catalogTypes, checkCatalogValues, isKnownCatalogType } from "./catalog-spec.js";
 import { guideMarkdown } from "../guide.js";
-import { type CypherRunner, type GremlinRunner, registerSchemaTools, schemaDiff, waitUntilQueryable } from "./schema-tools.js";
+import { type CypherRunner, type GremlinRunner, registerSchemaTools, schemaDiff, waitUntilQueryable, withSchemaLock } from "./schema-tools.js";
 import { SCHEMA_TEMPLATE, SCHEMA_TEMPLATE_NOTES } from "./template.js";
 import { responseError, validateSchema } from "./validate.js";
 
@@ -407,14 +407,16 @@ export function registerSetupTools(
           // answers with something like "unknown metastoreType:".
           const optionWarnings: string[] = [];
           if (isKnownCatalogType(args.type)) {
+            // The values that will actually be sent, under their form names.
             const values: Record<string, unknown> = { ...options };
-            if (isJdbc) {
-              for (const field of ["jdbcUri", "jdbcUsername", "jdbcPassword", "driverClass"]) values[field] ??= "set";
-              if (args.driver_url) values.driverUrl = args.driver_url;
-            }
+            if (args.jdbc_uri !== undefined) values.jdbcUri = args.jdbc_uri;
+            if (args.username !== undefined) values.jdbcUsername = args.username;
+            if (password !== undefined) values.jdbcPassword = password;
+            if (args.driver_url !== undefined) values.driverUrl = args.driver_url;
+            if (isJdbc && (args.driver_class || JDBC_DRIVERS[args.type])) values.driverClass = args.driver_class || JDBC_DRIVERS[args.type];
             const check = checkCatalogValues(args.type, values);
             const invalid = Object.entries(check.invalid_options).map(([field, allowed]) => `${field} must be one of ${allowed.map(String).join(", ")}`);
-            const missing = isJdbc ? [] : check.missing;
+            const missing = check.missing;
             if (missing.length > 0 || invalid.length > 0) {
               throw new SetupError(
                 "INVALID_INPUT",
@@ -433,6 +435,11 @@ export function registerSetupTools(
             catalogName: args.name,
             catalogType: args.type,
           };
+          // The catalog form picks BigQuery's client with bigqueryDriverType;
+          // PuppyGraph reads connectivity (the web UI translates it the same way).
+          if (args.type === "bigquery" && options.bigqueryDriverType === "adbc" && catalog.connectivity === undefined) {
+            catalog.connectivity = "adbc";
+          }
           if (isJdbc) {
             if (args.jdbc_uri !== undefined) catalog.jdbcUri = args.jdbc_uri;
             if (args.username !== undefined) catalog.jdbcUsername = args.username;
@@ -797,7 +804,7 @@ export function registerSetupTools(
       },
       runTool(
         "puppygraph_upload_schema",
-        async ({ schema, replace }: { schema: unknown; replace?: boolean }, log) => {
+        async ({ schema, replace }: { schema: unknown; replace?: boolean }, log) => withSchemaLock(rest, async () => {
           refuseIfReadOnly("puppygraph_upload_schema");
           const validation = await validateSchema(rest, schema);
           if (!validation.valid) {
@@ -877,7 +884,7 @@ export function registerSetupTools(
             warnings: [...validation.warnings, ...(Array.isArray(body.warnings) ? body.warnings : [])],
             next: "Check that every edge connects real nodes with puppygraph_check_edges, then query the graph with puppygraph_query.",
           };
-        },
+        }),
         ({ schema }: { schema: unknown }) => secretsOfSchema(schema),
       ),
     );

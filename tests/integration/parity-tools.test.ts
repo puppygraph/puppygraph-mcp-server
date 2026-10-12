@@ -461,6 +461,29 @@ describe("per-element schema edits", () => {
     expect(rest.called("POST", "/schema")).toHaveLength(0);
   });
 
+  it("applies parallel edits one after another, so none is lost", async () => {
+    const { rest, state } = puppygraph({ schema: { node: [customer], edge: [] } });
+    await connect(rest);
+    const [first, second] = await Promise.all([
+      callTool("puppygraph_add_node", { node: order }),
+      callTool("puppygraph_add_node", { node: orderLine }),
+    ]);
+    expect(first.body.ok).toBe(true);
+    expect(second.body.ok).toBe(true);
+    expect(state.schema.node.map((node: any) => node.label).sort()).toEqual(["Customer", "Order", "OrderLine"]);
+  });
+
+  it("refuses an edit when the installed schema's version can't be read", async () => {
+    const { rest } = puppygraph({
+      schema: { node: [customer], edge: [] },
+      overrides: { "GET /ui-api/schema/versions": () => json(500, "boom") },
+    });
+    await connect(rest);
+    const { body } = await callTool("puppygraph_add_node", { node: order });
+    expect(body.error).toContain("Could not read the installed schema's version");
+    expect(rest.called("POST", "/schema")).toHaveLength(0);
+  });
+
   it("won't remove a node an edge still uses", async () => {
     const { rest } = puppygraph({ schema: { node: [customer, order], edge: [placed] } });
     await connect(rest);
@@ -507,10 +530,10 @@ describe("check_edges", () => {
       [/^MATCH \(n:`Order`\)/, 200],
       [/^MATCH \(\)-\[r:`PLACED`\]/, 200],
       [/^MATCH \(a:`Customer`\) WITH a MATCH \(a\)-\[r:`PLACED`\]/, 200],
-      [/^MATCH \(b:`Order`\) WITH b MATCH \(:`Customer`\)-\[r:`PLACED`\]/, 200],
+      [/^MATCH \(b:`Order`\) WITH b MATCH \(\)-\[r:`PLACED`\]/, 200],
       [/^MATCH \(\)-\[r:`OPENED`\]/, 30],
       [/^MATCH \(a:`Customer`\) WITH a MATCH \(a\)-\[r:`OPENED`\]/, 0],
-      [/^MATCH \(b:`Order`\) WITH b MATCH \(:`Customer`\)-\[r:`OPENED`\]/, 30],
+      [/^MATCH \(b:`Order`\) WITH b MATCH \(\)-\[r:`OPENED`\]/, 30],
     ];
     const service = makeService((query) => [{ n: counts.find(([pattern]) => pattern.test(query))?.[1] ?? 0 }]);
     await connect(puppygraph({ schema }).rest, service);
@@ -529,14 +552,20 @@ describe("check_edges", () => {
   it("counts edge rows with Gremlin, where Cypher only returns edges whose nodes exist", async () => {
     // Newer PuppyGraph: Cypher drops edges whose endpoints don't exist, so a
     // wrong key looks like an empty table. g.E() still counts the rows.
+    // Gremlin's g.V().outE()/inE() check one side each.
     const service = makeService((query) => [{ n: /OPENED/.test(query) ? 0 : 200, d: 200 }]);
     vi.mocked(service.executeGremlin).mockImplementation(async ({ query }: { query: string }) => ({
-      data: [query.includes('"OPENED"') ? 30 : 200],
+      data: [query.startsWith("g.E()") ? 30 : query.includes(".outE(") ? 0 : 30],
     }) as any);
     await connect(puppygraph({ schema }).rest, service);
     const { body } = await callTool("puppygraph_check_edges", { labels: ["OPENED"] });
-    expect(body.edges[0]).toMatchObject({ label: "OPENED", rows: 30, reach_source: 0, reach_target: 0, status: "broken" });
-    expect(body.edges[0].note).toContain("No edge row reaches both");
+    expect(body.edges[0]).toMatchObject({ label: "OPENED", rows: 30, reach_source: 0, reach_target: 30, status: "broken" });
+    expect(body.edges[0].note).toContain("No edge row reaches a 'Customer' node");
+    expect(vi.mocked(service.executeGremlin).mock.calls.map(([call]: any) => call.query)).toEqual([
+      'g.E().hasLabel("OPENED").count()',
+      'g.V().hasLabel("Customer").outE("OPENED").count()',
+      'g.V().hasLabel("Order").inE("OPENED").count()',
+    ]);
   });
 
   it("flags partly dangling edges as suspect below 95%", async () => {

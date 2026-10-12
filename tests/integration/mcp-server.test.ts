@@ -409,6 +409,30 @@ describe("MCP backward-compatibility contract", () => {
     },
   );
 
+  it("scrubs numeric parameters and short configured credentials from query errors", async () => {
+    await client.close();
+    await server.close();
+    server = createPuppyGraphServer(service, {
+      PUPPYGRAPH_URL: "bolt://compatibility-test:7687",
+      PUPPYGRAPH_PASSWORD: "xy",
+    });
+    client = new Client({ name: "compatibility-test-client", version: "1.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    service.executeCypher.mockRejectedValueOnce(new Error("no account 987654321 for password xy (line 1)"));
+
+    const result = await client.callTool({
+      name: "puppygraph_query",
+      arguments: { language: "cypher", query: "MATCH (a {id: $id}) RETURN a", parameters: { id: 987654321 } },
+    });
+
+    const error = (parseTextContent(result) as any).metadata.error;
+    expect(error).not.toContain("987654321");
+    expect(error).not.toContain(" xy ");
+    expect(error).toContain("(line 1)");
+  });
+
   it.each(["puppygraph_schema", "mcp__puppygraph_schema"])(
     "%s marks schema failures as sanitized MCP errors",
     async (toolName) => {

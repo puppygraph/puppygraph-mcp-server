@@ -83,18 +83,27 @@ function configuredSecrets(environment: NodeJS.ProcessEnv): string[] {
     "PUPPYGRAPH_SCHEMA_PASSWORD",
   ]
     .map((name) => environment[name])
-    .filter((value): value is string => typeof value === "string" && value.length >= 3);
+    .filter((value): value is string => typeof value === "string" && value !== "");
 }
 
-function stringValues(value: unknown, found: string[] = []): string[] {
-  if (typeof value === "string") {
-    found.push(value);
-  } else if (Array.isArray(value)) {
-    value.forEach((item) => stringValues(item, found));
+/** Every scalar value of the query parameters. */
+function flatScalars(value: unknown, found: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    value.forEach((item) => flatScalars(item, found));
   } else if (value !== null && typeof value === "object") {
-    Object.values(value as Record<string, unknown>).forEach((item) => stringValues(item, found));
+    Object.values(value as Record<string, unknown>).forEach((item) => flatScalars(item, found));
+  } else if (["string", "number", "bigint", "boolean"].includes(typeof value)) {
+    found.push(value);
   }
   return found;
+}
+
+/** Masks values that are words or numbers only where they stand alone, so "1" doesn't mask every digit. */
+function scrubTokens(text: string, values: readonly string[]): string {
+  return values.reduce((current, value) => {
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return current.replace(new RegExp(`(?<![A-Za-z0-9_.])${escaped}(?![A-Za-z0-9_])`, "g"), "******");
+  }, text);
 }
 
 /**
@@ -108,9 +117,16 @@ function queryErrorDetail(error: unknown, query: string, parameters: unknown, en
   const message = raw.replace(/^Error executing (Cypher|Gremlin) query:\s*/i, "").trim();
   const literals = [...query.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"/g)]
     .map((match) => match[1] ?? match[2] ?? "");
-  const secrets = [...literals, ...stringValues(parameters), ...configuredSecrets(environment)]
-    .filter((secret) => secret.length > 0);
-  return scrubText(redactUri(message), secrets).slice(0, 1500);
+  const values = flatScalars(parameters);
+  // Strings are scrubbed wherever they appear, however short (as the setup
+  // tools do); numbers and booleans only as whole tokens.
+  const strings = [
+    ...literals,
+    ...values.filter((value): value is string => typeof value === "string"),
+    ...configuredSecrets(environment),
+  ].filter((secret) => secret.length > 0);
+  const tokens = values.filter((value) => typeof value !== "string").map(String);
+  return scrubTokens(scrubText(redactUri(message), strings), tokens).slice(0, 1500);
 }
 const emptyInputSchema = z.object({}).strict();
 
