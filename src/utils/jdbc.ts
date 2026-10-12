@@ -8,7 +8,7 @@
 
 export const DOCKER_HOST_ALIAS = "host.docker.internal";
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 interface HostSpan {
   host: string;
