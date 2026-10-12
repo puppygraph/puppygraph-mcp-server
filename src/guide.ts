@@ -15,7 +15,7 @@ export function serverInstructions(readOnly: boolean): string {
     ? "The server is in read-only mode: it can inspect catalogs and run read queries, but creating catalogs, uploading schemas and write queries are disabled."
     : "To build a graph from a database: puppygraph_list_catalogs, puppygraph_create_catalog, puppygraph_list_tables / puppygraph_describe_table, puppygraph_schema_template, puppygraph_validate_schema, then puppygraph_upload_schema.";
   return [
-    "PuppyGraph MCP server. Everything it does is exposed as tools (named puppygraph_*), not as resources; call the tools directly.",
+    "PuppyGraph MCP server. Its functionality is exposed as tools (named puppygraph_*); call the tools directly. The two resources listed below are only a guide and a read-only view of the schema.",
     "Start with puppygraph_status to check the connection, then puppygraph_schema to see the graph's labels and properties, then puppygraph_query to run Cypher or Gremlin.",
     setup,
     "PuppyGraph connects to databases from its own server: if PuppyGraph runs in Docker, a database on the Docker host is at host.docker.internal, not localhost.",
