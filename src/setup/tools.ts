@@ -5,6 +5,12 @@ import {
   type PuppyGraphRestLike,
   type RestResponse,
 } from "../clients/rest.js";
+import {
+  dockerHostJdbcUri,
+  isLoopbackJdbcUri,
+  LOCALHOST_HINT,
+  looksUnreachable,
+} from "../utils/jdbc.js";
 import { createRequestId, errorCategory } from "../utils/logging.js";
 import { collectSecrets, maskSecrets, MASK, scrubText } from "../utils/redact.js";
 import { SCHEMA_TEMPLATE, SCHEMA_TEMPLATE_NOTES } from "./template.js";
@@ -29,6 +35,7 @@ export type SetupErrorCode =
   | "PERMISSION_DENIED"
   | "CONNECTION_FAILED"
   | "TIMEOUT"
+  | "HOST_UNREACHABLE_FROM_PUPPYGRAPH"
   | "UPSTREAM_ERROR";
 
 class SetupError extends Error {
@@ -97,6 +104,22 @@ function errorFromResponse(
     );
   }
   return new SetupError("UPSTREAM_ERROR", `Failed to ${action}: ${message}`);
+}
+
+/**
+ * A connection failure to a loopback JDBC host, as PuppyGraph in Docker
+ * reports it: say why and suggest the URI to retry with. Other errors pass
+ * through unchanged.
+ */
+function withLocalhostHint(error: SetupError, jdbcUri: string | undefined): SetupError {
+  if (!jdbcUri || !isLoopbackJdbcUri(jdbcUri) || !looksUnreachable(error.message)) {
+    return error;
+  }
+  return new SetupError("HOST_UNREACHABLE_FROM_PUPPYGRAPH", error.message, {
+    ...error.details,
+    hint: LOCALHOST_HINT,
+    suggested_jdbc_uri: dockerHostJdbcUri(jdbcUri),
+  });
 }
 
 async function call(
@@ -363,7 +386,10 @@ export function registerSetupTools(
             timeoutMs: CATALOG_TIMEOUT_MS,
           });
           if (!response.ok) {
-            const error = errorFromResponse(response, `create catalog '${args.name}'`, secrets);
+            const error = withLocalhostHint(
+              errorFromResponse(response, `create catalog '${args.name}'`, secrets),
+              (catalog.jdbcUri as string | undefined) ?? undefined,
+            );
             if (/already exists/i.test(error.message)) {
               throw new SetupError(
                 "ALREADY_EXISTS",

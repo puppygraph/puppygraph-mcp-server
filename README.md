@@ -33,6 +33,8 @@ Setup tools, to go from an empty PuppyGraph to a graph you can query:
 
 When PuppyGraph can't be reached, the tools return an error. They never return sample data.
 
+The server also exposes two read-only resources, `puppygraph://guide` (which tools to call, in what order) and `puppygraph://schema` (the current graph schema), and sends the same guidance as its MCP `instructions`, so clients that look at resources or instructions first find the tools.
+
 ## Quick start
 
 1. Start PuppyGraph (Docker):
@@ -41,6 +43,7 @@ When PuppyGraph can't be reached, the tools return an error. They never return s
    docker run -d --name puppy --pull=always \
      -p 8081:8081 -p 8182:8182 -p 7687:7687 \
      -e PUPPYGRAPH_PASSWORD=puppygraph123 \
+     --add-host=host.docker.internal:host-gateway \
      puppygraph/puppygraph:latest
    ```
 
@@ -48,7 +51,7 @@ When PuppyGraph can't be reached, the tools return an error. They never return s
 
 3. Ask your agent to build a graph from your data, for example "Use PuppyGraph to connect to my Postgres at jdbc:postgresql://db:5432/shop and find customers who share a payment card", or, if a schema is already loaded, "What's in my PuppyGraph graph?".
 
-   PuppyGraph connects to your database itself, so the JDBC URI must use an address that the PuppyGraph container can reach (e.g. `host.docker.internal` for a database on your machine, not `localhost`). You can also connect data and build the schema in the web UI at http://localhost:8081 (sign in as `puppygraph` / `puppygraph123`); see the [PuppyGraph docs](https://docs.puppygraph.com).
+   PuppyGraph connects to your database itself, so the JDBC URI must use an address that the PuppyGraph container can reach (e.g. `host.docker.internal` for a database on your machine, not `localhost`; the `--add-host` flag above makes that name work on Linux). If an agent uses `localhost` anyway, `puppygraph_create_catalog` fails with `error_type: HOST_UNREACHABLE_FROM_PUPPYGRAPH`, a hint and a `suggested_jdbc_uri` to retry with. You can also connect data and build the schema in the web UI at http://localhost:8081 (sign in as `puppygraph` / `puppygraph123`); see the [PuppyGraph docs](https://docs.puppygraph.com).
 
 Requires Node.js 20 or later.
 

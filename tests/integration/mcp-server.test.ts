@@ -78,10 +78,10 @@ describe("MCP backward-compatibility contract", () => {
     await server.close();
   });
 
-  it("advertises the 1.2.0 server identity", () => {
+  it("advertises the 1.3.0 server identity", () => {
     expect(client.getServerVersion()).toEqual({
       name: "puppygraph",
-      version: "1.2.0",
+      version: "1.3.0",
     });
   });
 
@@ -99,12 +99,12 @@ describe("MCP backward-compatibility contract", () => {
       {
         name: "puppygraph_schema",
         description:
-          "Get schema and structure information about the PuppyGraph database",
+          "Get schema and structure information about the PuppyGraph database: node and edge labels and their properties. Call it before writing a query.",
       },
       {
         name: "puppygraph_status",
         description:
-          "Get connection status and configuration information for PuppyGraph",
+          "Get connection status and configuration information for PuppyGraph. Call this first to check that PuppyGraph is reachable.",
       },
       {
         name: "mcp__puppygraph_query",
@@ -114,12 +114,12 @@ describe("MCP backward-compatibility contract", () => {
       {
         name: "mcp__puppygraph_schema",
         description:
-          "Get schema and structure information about the PuppyGraph database",
+          "Get schema and structure information about the PuppyGraph database: node and edge labels and their properties. Call it before writing a query.",
       },
       {
         name: "mcp__puppygraph_status",
         description:
-          "Get connection status and configuration information for PuppyGraph",
+          "Get connection status and configuration information for PuppyGraph. Call this first to check that PuppyGraph is reachable.",
       },
     ]);
 
@@ -440,7 +440,7 @@ describe("MCP server in read-only mode", () => {
     };
 
     server = createPuppyGraphServer(service, { PUPPYGRAPH_READ_ONLY: "true" });
-    client = new Client({ name: "read-only-test-client", version: "1.2.0" });
+    client = new Client({ name: "read-only-test-client", version: "1.3.0" });
 
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();

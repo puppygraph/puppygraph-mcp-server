@@ -29,7 +29,7 @@ describe("MCP server with PuppyGraph unreachable", () => {
     const { createPuppyGraphServer } = await import("../../src/server.js");
 
     const server = createPuppyGraphServer(puppyGraphService, process.env, false);
-    client = new Client({ name: "unreachable-test-client", version: "1.2.0" });
+    client = new Client({ name: "unreachable-test-client", version: "1.3.0" });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);

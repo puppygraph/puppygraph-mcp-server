@@ -690,6 +690,102 @@ describe("schema tools", () => {
   });
 });
 
+describe("localhost JDBC URIs", () => {
+  // What PuppyGraph 1.x in Docker answers when the JDBC host is unreachable.
+  const unreachable: Route = ({ body }) => {
+    const uri = (body as any).catalogs[0].jdbcUri as string;
+    const host = new URL(uri.replace(/^jdbc:/, "")).hostname;
+    return json(500, { errorMessage: `service (host:${host} port:5432) is not reachable` });
+  };
+
+  it("explains Docker networking and suggests host.docker.internal when localhost is unreachable", async () => {
+    await connect(new FakeRest(baseRoutes({ "POST /ui-api/catalog": unreachable })));
+
+    const { body, raw, isError } = await callTool("puppygraph_create_catalog", {
+      name: "bank",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://localhost:5432/bank",
+      username: "analyst",
+      password: PASSWORD,
+    });
+
+    expect(isError).toBe(true);
+    expect(body.error_type).toBe("HOST_UNREACHABLE_FROM_PUPPYGRAPH");
+    expect(body.error).toContain("not reachable");
+    expect(body.hint).toContain("host.docker.internal");
+    expect(body.suggested_jdbc_uri).toBe("jdbc:postgresql://host.docker.internal:5432/bank");
+    expect(raw).not.toContain(PASSWORD);
+  });
+
+  it("leaves other errors and non-loopback hosts alone", async () => {
+    await connect(new FakeRest(baseRoutes({ "POST /ui-api/catalog": unreachable })));
+    const remote = await callTool("puppygraph_create_catalog", {
+      name: "bank",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://db.example.com:5432/bank",
+    });
+    expect(remote.body.error_type).toBe("UPSTREAM_ERROR");
+    expect(remote.body.hint).toBeUndefined();
+
+    await client!.close();
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog": () =>
+        json(500, { errorMessage: 'FATAL: password authentication failed for user "analyst"' }),
+    })));
+    const auth = await callTool("puppygraph_create_catalog", {
+      name: "bank",
+      type: "postgresql",
+      jdbc_uri: "jdbc:postgresql://localhost:5432/bank",
+    });
+    expect(auth.body.error_type).toBe("UPSTREAM_ERROR");
+    expect(auth.body.suggested_jdbc_uri).toBeUndefined();
+  });
+});
+
+describe("discovery: instructions and resources", () => {
+  it("tells the client at initialize that the functionality is in tools", async () => {
+    await connect(new FakeRest(baseRoutes()));
+
+    const instructions = client!.getInstructions();
+    expect(instructions).toContain("exposed as tools");
+    expect(instructions).toContain("puppygraph_status");
+    expect(instructions).toContain("puppygraph_create_catalog");
+    expect(instructions).toContain("host.docker.internal");
+  });
+
+  it("lists a guide and the schema as resources and reads both", async () => {
+    vi.mocked(service.getDataSources).mockResolvedValueOnce({ schema: { node: [{ label: "Account" }], edge: [] } });
+    await connect(new FakeRest(baseRoutes()));
+
+    const { resources } = await client!.listResources();
+    expect(resources.map((resource) => resource.uri)).toEqual(["puppygraph://guide", "puppygraph://schema"]);
+
+    const guide = await client!.readResource({ uri: "puppygraph://guide" });
+    expect((guide.contents[0] as any).text).toContain("puppygraph_upload_schema");
+    const schema = await client!.readResource({ uri: "puppygraph://schema" });
+    expect(JSON.parse((schema.contents[0] as any).text).schema.node[0].label).toBe("Account");
+  });
+
+  it("returns the schema error as content instead of failing the read", async () => {
+    vi.mocked(service.getDataSources).mockRejectedValueOnce(new Error("connect ECONNREFUSED 127.0.0.1:8081"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await connect(new FakeRest(baseRoutes()));
+
+    const schema = await client!.readResource({ uri: "puppygraph://schema" });
+    expect(JSON.parse((schema.contents[0] as any).text).metadata.error_type).toBeDefined();
+  });
+
+  it("leaves the write steps out of the read-only guide and instructions", async () => {
+    await connect(new FakeRest(baseRoutes()), { PUPPYGRAPH_READ_ONLY: "true" });
+
+    expect(client!.getInstructions()).toContain("read-only mode");
+    expect(client!.getInstructions()).not.toContain("puppygraph_create_catalog");
+    const guide = await client!.readResource({ uri: "puppygraph://guide" });
+    expect((guide.contents[0] as any).text).toContain("read-only mode");
+    expect((guide.contents[0] as any).text).not.toContain("puppygraph_upload_schema");
+  });
+});
+
 describe("setup tools in read-only mode", () => {
   it("does not register the write tools and keeps the read tools", async () => {
     await connect(new FakeRest(baseRoutes()), { PUPPYGRAPH_READ_ONLY: "true" });
