@@ -21,7 +21,7 @@ import { validateSchema } from "./validate.js";
  */
 
 /** Runs a Cypher query and returns its rows. */
-export type CypherRunner = (query: string) => Promise<Array<Record<string, unknown>>>;
+export type CypherRunner = (query: string, timeoutMs?: number) => Promise<Array<Record<string, unknown>>>;
 /** Runs a Gremlin traversal and returns its results. */
 export type GremlinRunner = (query: string) => Promise<unknown[]>;
 
@@ -120,8 +120,8 @@ export function schemaDiff(before: unknown, after: unknown) {
   return { nodes: diff("node"), edges: diff("edge") };
 }
 
-async function count(query: CypherRunner, cypher: string): Promise<number> {
-  const rows = await query(cypher);
+async function count(query: CypherRunner, cypher: string, timeoutMs?: number): Promise<number> {
+  const rows = await query(cypher, timeoutMs);
   const value = rows?.[0] ? Object.values(rows[0])[0] : 0;
   return typeof value === "number" ? value : Number(value ?? 0);
 }
@@ -221,6 +221,7 @@ export async function waitUntilQueryable(
   query: CypherRunner | undefined,
   schema: unknown,
   diff: ReturnType<typeof schemaDiff>,
+  waitMs = READY_WAIT_MS,
 ): Promise<{ ready: boolean; note?: string }> {
   if (!query) return { ready: true };
   const nodes = [...diff.nodes.added, ...diff.nodes.changed].slice(0, 3);
@@ -232,17 +233,29 @@ export async function waitUntilQueryable(
     ...edges.map((edge) => `MATCH ()-[r:${quote(cypherLabels(edge)[0])}]->() RETURN count(r) AS n`),
   ];
   if (probes.length === 0) return { ready: true };
-  const deadline = Date.now() + READY_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   const pending = new Set(probes);
   while (pending.size > 0 && Date.now() < deadline) {
     for (const probe of [...pending]) {
       try {
-        if ((await count(query, probe)) > 0) pending.delete(probe);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        // Bounded twice: the transaction timeout asks PuppyGraph to stop, the
+        // timer stops waiting if it doesn't.
+        let timer: NodeJS.Timeout | undefined;
+        const rows = await Promise.race([
+          count(query, probe, Math.max(remaining, 1000)),
+          new Promise<number>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("deadline")), remaining);
+          }),
+        ]).finally(() => clearTimeout(timer));
+        if (rows > 0) pending.delete(probe);
       } catch {
         // not queryable yet
       }
     }
-    if (pending.size > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+    const pause = Math.min(1000, deadline - Date.now());
+    if (pending.size > 0 && pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
   }
   return pending.size === 0
     ? { ready: true }
@@ -492,9 +505,22 @@ export function registerSchemaTools(
     change(next);
 
     const validation = await validateSchema(rest, next);
-    const mentions = (problem: string) => touched.some((label) => problem.includes(`'${label}'`));
-    const own = validation.problems.filter(mentions);
-    const others = validation.problems.filter((problem) => !mentions(problem));
+    // A problem belongs to this edit if it names a touched element, or names
+    // no element at all (e.g. "The schema has no nodes") and wasn't there
+    // before the edit. Problems that name other elements are reported only.
+    const labels = [...live.node, ...live.edge, ...next.node, ...next.edge]
+      .map((element) => element?.label)
+      .filter((label): label is string => typeof label === "string" && label !== "");
+    const names = (problem: string, label: string) => problem.includes(`'${label}'`);
+    const isGlobal = (problem: string) => !labels.some((label) => names(problem, label));
+    let existingGlobal: string[] = [];
+    if (validation.problems.some(isGlobal)) {
+      existingGlobal = (await validateSchema(rest, live)).problems.filter(isGlobal);
+    }
+    const ownProblem = (problem: string) =>
+      touched.some((label) => names(problem, label)) || (isGlobal(problem) && !existingGlobal.includes(problem));
+    const own = validation.problems.filter(ownProblem);
+    const others = validation.problems.filter((problem) => !ownProblem(problem));
     if (own.length > 0) {
       throw new SetupError("VALIDATION_FAILED", "The change has problems; nothing was changed. Fix them and call again.", {
         problems: own,

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PuppyGraphRestLike, RestRequest, RestResponse } from "../../src/clients/rest.js";
 import { createPuppyGraphServer, type PuppyGraphServiceLike } from "../../src/server.js";
 import { isSecretKey } from "../../src/utils/redact.js";
+import { waitUntilQueryable } from "../../src/setup/schema-tools.js";
 
 /**
  * The tools and checks that bring the MCP server to parity with PuppyGraph
@@ -231,6 +232,20 @@ describe("create_catalog guidance", () => {
       driver_url: "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar",
     });
     expect((rest.called("POST", "/ui-api/catalog")[0].options.body as any).catalogs[0].driverUrl).toContain("mysql-connector-j");
+    expect(body.suggested_jdbc_uri).toBe("jdbc:mysql://my:3306/bank?allowPublicKeyRetrieval=true&useSSL=false");
+  });
+
+  it("turns allowPublicKeyRetrieval=false into true in the suggested URI", async () => {
+    const { rest } = puppygraph({
+      overrides: { "POST /ui-api/catalog": () => json(500, { errorMessage: "Failed to initialize pool: RSA public key is not available client side" }) },
+    });
+    await connect(rest);
+    const { body } = await callTool("puppygraph_create_catalog", {
+      name: "bank",
+      type: "mysql8",
+      jdbc_uri: "jdbc:mysql://my:3306/bank?allowPublicKeyRetrieval=false&useSSL=false",
+      driver_url: "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar",
+    });
     expect(body.suggested_jdbc_uri).toBe("jdbc:mysql://my:3306/bank?allowPublicKeyRetrieval=true&useSSL=false");
   });
 
@@ -524,6 +539,24 @@ describe("per-element schema edits", () => {
     expect(rest.called("POST", "/schema")).toHaveLength(0);
   });
 
+  it("refuses to remove the last node, which would leave an invalid empty schema", async () => {
+    const { rest } = puppygraph({ schema: { node: [customer], edge: [] } });
+    await connect(rest);
+    const { body } = await callTool("puppygraph_remove_node", { label: "Customer" });
+    expect(body.error_type).toBe("VALIDATION_FAILED");
+    expect(body.problems).toEqual([expect.stringContaining("The schema has no nodes")]);
+    expect(rest.called("POST", "/schema")).toHaveLength(0);
+  });
+
+  it("doesn't blame an edit for a problem that names no element but was there before", async () => {
+    const unlabelled = { ...order, label: "" };
+    const { rest } = puppygraph({ schema: { node: [customer, unlabelled], edge: [] } });
+    await connect(rest);
+    const { body } = await callTool("puppygraph_add_node", { node: orderLine });
+    expect(body.ok).toBe(true);
+    expect(body.warnings).toContainEqual(expect.stringContaining("Node without a label"));
+  });
+
   it("won't remove a node an edge still uses", async () => {
     const { rest } = puppygraph({ schema: { node: [customer, order], edge: [placed] } });
     await connect(rest);
@@ -665,6 +698,27 @@ describe("upload_schema", () => {
       edges: { added: ["PLACED"], removed: [], changed: [] },
     });
     expect(calls).toBeGreaterThan(1);
+  });
+});
+
+describe("post-upload wait", () => {
+  it("stops at its deadline even when a probe never answers, and passes the time left as a timeout", async () => {
+    const timeouts: Array<number | undefined> = [];
+    const never = (_query: string, timeoutMs?: number) => {
+      timeouts.push(timeoutMs);
+      return new Promise<Array<Record<string, unknown>>>(() => {});
+    };
+    const started = Date.now();
+    const result = await waitUntilQueryable(
+      never,
+      { node: [customer], edge: [] },
+      { nodes: { added: ["Customer"], removed: [], changed: [] }, edges: { added: [], removed: [], changed: [] } },
+      300,
+    );
+    expect(result.ready).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(timeouts[0]).toBeGreaterThanOrEqual(300);
+    expect(timeouts[0]).toBeLessThanOrEqual(1000);
   });
 });
 

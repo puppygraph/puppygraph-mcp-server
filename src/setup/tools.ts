@@ -78,7 +78,9 @@ export function catalogErrorHint(message: string, type: string, jdbcUri: string 
     const separator = jdbcUri.includes("?") ? "&" : "?";
     return {
       hint: "MySQL 8's default authentication needs the server's public key over a non-TLS connection. Add allowPublicKeyRetrieval=true (and useSSL=false if the server has no TLS) to the JDBC URI.",
-      suggested_jdbc_uri: /allowPublicKeyRetrieval/i.test(jdbcUri) ? jdbcUri : `${jdbcUri}${separator}allowPublicKeyRetrieval=true&useSSL=false`,
+      suggested_jdbc_uri: /allowPublicKeyRetrieval=/i.test(jdbcUri)
+        ? jdbcUri.replace(/allowPublicKeyRetrieval=[^&;]*/i, "allowPublicKeyRetrieval=true")
+        : `${jdbcUri}${separator}allowPublicKeyRetrieval=true&useSSL=false`,
     };
   }
   if (/unknown (metastoreType|storageType|catalogType)|metastoreType:|is required/i.test(message)) {

@@ -372,8 +372,8 @@ export function createPuppyGraphServer(
   registerSetupTools(server, rest, {
     readOnly,
     environment,
-    query: async (cypher) => {
-      const result = (await service.executeCypher({ query: cypher })) as { data?: Array<Record<string, unknown>> };
+    query: async (cypher, timeoutMs) => {
+      const result = (await service.executeCypher({ query: cypher, ...(timeoutMs ? { timeoutMs } : {}) })) as { data?: Array<Record<string, unknown>> };
       return Array.isArray(result?.data) ? result.data : [];
     },
     gremlin: async (traversal) => {
