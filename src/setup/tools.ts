@@ -137,7 +137,7 @@ async function probe(
   if (response.status === 404 && code !== "catalog_not_found") {
     throw new SetupError(
       "NOT_SUPPORTED",
-      "This PuppyGraph version can't probe source data (the probe endpoints came after 1.14). Choose ids and edges from the column names and types in puppygraph_describe_table and tell the user that the keys and joins are unverified until checked; after uploading, run puppygraph_check_edges, which checks every edge against the data on any PuppyGraph 1.x.",
+      "This PuppyGraph version can't probe source data (the probe endpoints came after 1.14), so none of the probe tools (puppygraph_sample_table, puppygraph_profile_column, puppygraph_table_row_count, puppygraph_check_join) work here; don't call them again. Choose ids and edges from the column names and types in puppygraph_describe_table and tell the user that the keys and joins are unverified until checked; after uploading, run puppygraph_check_edges, which checks every edge against the data on any PuppyGraph 1.x.",
     );
   }
   if (!response.ok) {
