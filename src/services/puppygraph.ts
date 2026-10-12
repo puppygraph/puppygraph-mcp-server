@@ -107,7 +107,7 @@ export class PuppyGraphService {
     }
   }
 
-  public async executeCypher(params: { query: string; parameters?: Record<string, any>; requestId?: string }): Promise<QueryResult<any>> {
+  public async executeCypher(params: { query: string; parameters?: Record<string, any>; requestId?: string; timeoutMs?: number }): Promise<QueryResult<any>> {
     const requestId = params.requestId || createRequestId();
     console.error(`Query started request_id=${requestId} language=cypher`);
     
@@ -126,7 +126,7 @@ export class PuppyGraphService {
     const startTime = Date.now();
     
     try {
-      const records = await this.neo4jClient.executeQuery(params.query, params.parameters);
+      const { records, warnings } = await this.neo4jClient.executeQueryWithWarnings(params.query, params.parameters, params.timeoutMs);
       const executionTime = Date.now() - startTime;
       
       console.error(`Query completed request_id=${requestId} language=cypher duration_ms=${executionTime} row_count=${records.length}`);
@@ -135,7 +135,8 @@ export class PuppyGraphService {
         data: records,
         metadata: {
           execution_time: executionTime,
-          row_count: records.length
+          row_count: records.length,
+          ...(warnings.length > 0 ? { warnings } : {}),
         }
       };
     } catch (error: any) {

@@ -37,6 +37,14 @@ function parseTextContent(result: { content: Array<Record<string, unknown>> }) {
   return JSON.parse(content.text);
 }
 
+
+// Descriptions of the 1.0.0 tools: the names and inputs stay compatible; the
+// descriptions were extended to carry PuppyGraph AI's query guidance.
+const QUERY_DESCRIPTION =
+  "Execute a graph query (Gremlin or Cypher) against PuppyGraph. Use LIMIT (e.g. 20) unless all rows are needed. Node ids are not properties: id(n) or elementId(n) returns 'Label[value]' (e.g. 'Account[1]', 'OrderLine[1,2]' for a two-column id); n.<id column> is null. On an error or warning about an unknown label or property, look the name up with puppygraph_search_schema / puppygraph_get_schema_element and retry";
+const STATUS_DESCRIPTION =
+  "Get connection status and configuration information for PuppyGraph. Call this first to check that PuppyGraph is reachable. This server's features are all tools named puppygraph_* (query a graph; connect a database, warehouse, lake or files and build a graph schema); puppygraph_guide explains which to call in what order.";
+
 describe("MCP backward-compatibility contract", () => {
   let client: Client;
   let server: McpServer;
@@ -94,7 +102,7 @@ describe("MCP backward-compatibility contract", () => {
       {
         name: "puppygraph_query",
         description:
-          "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
+          QUERY_DESCRIPTION,
       },
       {
         name: "puppygraph_schema",
@@ -104,12 +112,12 @@ describe("MCP backward-compatibility contract", () => {
       {
         name: "puppygraph_status",
         description:
-          "Get connection status and configuration information for PuppyGraph. Call this first to check that PuppyGraph is reachable.",
+          STATUS_DESCRIPTION,
       },
       {
         name: "mcp__puppygraph_query",
         description:
-          "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
+          QUERY_DESCRIPTION,
       },
       {
         name: "mcp__puppygraph_schema",
@@ -119,7 +127,7 @@ describe("MCP backward-compatibility contract", () => {
       {
         name: "mcp__puppygraph_status",
         description:
-          "Get connection status and configuration information for PuppyGraph. Call this first to check that PuppyGraph is reachable.",
+          STATUS_DESCRIPTION,
       },
     ]);
 
@@ -129,9 +137,7 @@ describe("MCP backward-compatibility contract", () => {
     );
     expect(queryTool).toBeDefined();
     expect(prefixedQueryTool).toBeDefined();
-    expect(queryTool?.description).toBe(
-      "Execute a graph query (Gremlin or Cypher) against PuppyGraph",
-    );
+    expect(queryTool?.description).toBe(QUERY_DESCRIPTION);
     expect(prefixedQueryTool?.description).toBe(queryTool?.description);
     expect(prefixedQueryTool?.inputSchema).toEqual(queryTool?.inputSchema);
     expect(queryTool?.inputSchema).toEqual({
@@ -150,6 +156,13 @@ describe("MCP backward-compatibility contract", () => {
           type: "object",
           additionalProperties: {},
           description: "Optional parameters for the query",
+        },
+        // Optional, so 1.0.0 calls stay valid.
+        timeout_seconds: {
+          type: "integer",
+          minimum: 1,
+          maximum: 300,
+          description: "Cypher only: give up after this many seconds (at most 300)",
         },
       },
       required: ["query", "language"],
@@ -176,6 +189,8 @@ describe("MCP backward-compatibility contract", () => {
     const { tools } = await client.listTools();
 
     expect(tools.slice(6).map((tool) => tool.name)).toEqual([
+      "puppygraph_guide",
+      "puppygraph_catalog_spec",
       "puppygraph_list_catalogs",
       "puppygraph_create_catalog",
       "puppygraph_test_catalog",
@@ -188,6 +203,17 @@ describe("MCP backward-compatibility contract", () => {
       "puppygraph_schema_template",
       "puppygraph_validate_schema",
       "puppygraph_upload_schema",
+      "puppygraph_search_schema",
+      "puppygraph_get_schema_element",
+      "puppygraph_check_edges",
+      "puppygraph_add_node",
+      "puppygraph_update_node",
+      "puppygraph_remove_node",
+      "puppygraph_add_edge",
+      "puppygraph_update_edge",
+      "puppygraph_remove_edge",
+      "puppygraph_add_node_attribute",
+      "puppygraph_add_edge_attribute",
     ]);
   });
 
@@ -292,10 +318,12 @@ describe("MCP backward-compatibility contract", () => {
       expect(logs).not.toContain(password);
 
       expect(result.isError).toBe(true);
+      // PuppyGraph's message is returned, with the query's string literals and
+      // the parameter values scrubbed.
       expect(parseTextContent(result)).toEqual({
         data: [],
         metadata: {
-          error: "Unable to execute PuppyGraph query",
+          error: "Unable to execute PuppyGraph query: ****** ****** ****** ******",
           error_type: "UPSTREAM_ERROR",
         },
       });
@@ -356,7 +384,7 @@ describe("MCP backward-compatibility contract", () => {
   );
 
   it.each(["puppygraph_query", "mcp__puppygraph_query"])(
-    "%s marks query failures as sanitized MCP errors",
+    "%s returns query failures with credentials scrubbed",
     async (toolName) => {
       const secret = "query-secret://user:password@example.com";
       service.executeCypher.mockRejectedValueOnce(new Error(secret));
@@ -373,7 +401,7 @@ describe("MCP backward-compatibility contract", () => {
       expect(parseTextContent(result)).toEqual({
         data: [],
         metadata: {
-          error: "Unable to execute PuppyGraph query",
+          error: "Unable to execute PuppyGraph query: query-secret://user:******@example.com",
           error_type: "UPSTREAM_ERROR",
         },
       });

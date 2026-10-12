@@ -137,6 +137,23 @@ describe('Neo4jClient', () => {
   });
 
   describe('executeQuery', () => {
+    it('returns query warnings from Bolt notifications and sends the timeout', async () => {
+      const mockSession = {
+        run: vi.fn().mockResolvedValueOnce({
+          records: [],
+          summary: { notifications: [{ title: 'PuppyGraphWarning', description: 'label Custmer does not exist' }] },
+        }),
+        close: vi.fn().mockResolvedValue(undefined)
+      };
+      Object.defineProperty(client, 'driver', { value: { session: () => mockSession }, writable: true, configurable: true });
+      Object.defineProperty(client, 'connected', { value: true, writable: true, configurable: true });
+
+      const result = await client.executeQueryWithWarnings('MATCH (n:Custmer) RETURN n', {}, 5000);
+
+      expect(mockSession.run).toHaveBeenCalledWith('MATCH (n:Custmer) RETURN n', {}, { timeout: 5000 });
+      expect(result).toEqual({ records: [], warnings: ['PuppyGraphWarning: label Custmer does not exist'] });
+    });
+
     it('should execute a Cypher query successfully', async () => {
       // Directly modify mock session behavior for this test
       const mockSession = {

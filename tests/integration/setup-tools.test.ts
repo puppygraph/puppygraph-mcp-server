@@ -59,6 +59,12 @@ const columns: Record<string, string[]> = {
   account_devices: ["id", "account_id", "device_id", "first_seen"],
 };
 
+// Source types of the columns that aren't BIGINT, as /ui-api/column reports them.
+const columnTypes: Record<string, { type: string; schemaType: string }> = {
+  name: { type: "VARCHAR(1073741824)", schemaType: "STRING" },
+  first_seen: { type: "DATETIME", schemaType: "DATETIME" },
+};
+
 // A PuppyGraph with one catalog 'pg' whose tables match the schema template
 // (with catalog renamed to 'pg').
 function baseRoutes(overrides: Record<string, Route> = {}): Record<string, Route> {
@@ -69,7 +75,7 @@ function baseRoutes(overrides: Record<string, Route> = {}): Record<string, Route
       return table && query?.catalogName === "pg" && query?.databaseName === "public"
         ? json(200, {
             ok: true,
-            column: table.map((name) => ({ name, type: "BIGINT", schemaType: "LONG" })),
+            column: table.map((name) => ({ name, ...(columnTypes[name] ?? { type: "BIGINT", schemaType: "LONG" }) })),
           })
         : json(500, "rpc error: code = Unknown desc = Application error processing RPC");
     },
@@ -88,7 +94,7 @@ function templateSchema(): any {
 
 const service: PuppyGraphServiceLike = {
   executeGremlin: vi.fn(),
-  executeCypher: vi.fn(),
+  executeCypher: vi.fn().mockResolvedValue({ data: [{ n: 1 }] }),
   getDataSources: vi.fn(),
   getConnectionStatus: vi.fn().mockReturnValue({
     connected: true,
@@ -315,13 +321,20 @@ describe("catalog tools", () => {
   it("scrubs account keys passed in options from echoed errors and results", async () => {
     await connect(new FakeRest(baseRoutes({
       "POST /ui-api/catalog": ({ body }: any) =>
-        json(500, { errorMessage: `auth failed for key ${body.catalogs[0].accountKey}` }),
+        json(500, { errorMessage: `auth failed for key ${body.catalogs[0].sharedKey}` }),
     })));
 
     const { body, raw } = await callTool("puppygraph_create_catalog", {
       name: "lake",
       type: "deltalake",
-      options: { accountName: "acct", accountKey: "azure-key-1234" },
+      options: {
+        deltalakeMetastoreType: "hive",
+        hiveMetastoreUrl: "thrift://hms:9083",
+        storageType: "AzureBlob",
+        azureBlobAuthType: "sharedKey",
+        storageAccount: "acct",
+        sharedKey: "azure-key-1234",
+      },
     });
 
     expect(body.error).toContain("auth failed for key");
@@ -747,7 +760,8 @@ describe("discovery: instructions and resources", () => {
     await connect(new FakeRest(baseRoutes()));
 
     const instructions = client!.getInstructions();
-    expect(instructions).toContain("exposed as tools");
+    expect(instructions).toContain("Everything it does is a tool");
+    expect(instructions).toContain("puppygraph_guide");
     expect(instructions).toContain("puppygraph_status");
     expect(instructions).toContain("puppygraph_create_catalog");
     expect(instructions).toContain("host.docker.internal");
