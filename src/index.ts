@@ -19,7 +19,10 @@ async function main() {
 
   console.error("PuppyGraph MCP Server running on stdio");
   console.error(
-    "Available tools: puppygraph_query, puppygraph_schema, puppygraph_status",
+    "Available tools: puppygraph_query, puppygraph_schema, puppygraph_status, " +
+      "puppygraph_list_catalogs, puppygraph_test_catalog, puppygraph_list_tables, " +
+      "puppygraph_describe_table, puppygraph_schema_template, puppygraph_validate_schema" +
+      (isReadOnly() ? "" : ", puppygraph_create_catalog, puppygraph_upload_schema"),
   );
   console.error(
     `PuppyGraph URL: ${urlForLog(process.env.PUPPYGRAPH_URL || "bolt://localhost:7687")}`,

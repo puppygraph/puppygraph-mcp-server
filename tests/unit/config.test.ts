@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadConfig } from '../../src/utils/config';
+import { loadConfig, loadRestConfig } from '../../src/utils/config';
 
 describe('Config Utilities', () => {
   const originalEnv = { ...process.env };
@@ -108,5 +108,38 @@ describe('Config Utilities', () => {
       expect(config.gremlin.url).toBe('ws://localhost:8182/gremlin'); // Default
       expect(config.gremlin.password).toBe('partial-override-pass');
     });
+  });
+});
+
+describe('loadRestConfig', () => {
+  it('defaults to localhost:8081 with the PuppyGraph credentials', () => {
+    expect(loadRestConfig({})).toEqual({
+      url: 'http://localhost:8081',
+      username: 'puppygraph',
+      password: 'puppygraph123',
+    });
+  });
+
+  it('derives the URL from PUPPYGRAPH_SCHEMA_URL and uses the schema credentials', () => {
+    expect(
+      loadRestConfig({
+        PUPPYGRAPH_SCHEMA_URL: 'https://pg.example.com:9443/schemajson',
+        PUPPYGRAPH_SCHEMA_USERNAME: 'admin',
+        PUPPYGRAPH_SCHEMA_PASSWORD: 'secret',
+      }),
+    ).toEqual({ url: 'https://pg.example.com:9443', username: 'admin', password: 'secret' });
+  });
+
+  it('keeps a malformed PUPPYGRAPH_SCHEMA_URL instead of falling back to localhost', () => {
+    expect(loadRestConfig({ PUPPYGRAPH_SCHEMA_URL: 'not a url' }).url).toBe('not a url');
+  });
+
+  it('prefers PUPPYGRAPH_HTTP_URL', () => {
+    expect(
+      loadRestConfig({
+        PUPPYGRAPH_HTTP_URL: 'http://puppygraph:8081',
+        PUPPYGRAPH_SCHEMA_URL: 'http://other:8081/schemajson',
+      }).url,
+    ).toBe('http://puppygraph:8081');
   });
 });

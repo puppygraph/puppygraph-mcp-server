@@ -1,7 +1,7 @@
 {
   "name": "@puppygraph/mcp-server",
   "version": "1.2.0",
-  "description": "Model Context Protocol (MCP) server for PuppyGraph: lets AI agents query your graph with Cypher and Gremlin",
+  "description": "Model Context Protocol (MCP) server for PuppyGraph: lets AI agents connect data sources, build a graph schema, and query the graph with Cypher and Gremlin",
   "keywords": [
     "mcp",
     "model-context-protocol",

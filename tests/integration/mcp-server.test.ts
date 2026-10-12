@@ -89,7 +89,7 @@ describe("MCP backward-compatibility contract", () => {
     const { tools } = await client.listTools();
 
     expect(
-      tools.map(({ name, description }) => ({ name, description })),
+      tools.slice(0, 6).map(({ name, description }) => ({ name, description })),
     ).toEqual([
       {
         name: "puppygraph_query",
@@ -170,6 +170,21 @@ describe("MCP backward-compatibility contract", () => {
         $schema: "http://json-schema.org/draft-07/schema#",
       });
     }
+  });
+
+  it("adds the catalog and schema setup tools after the 1.0.0 tools", async () => {
+    const { tools } = await client.listTools();
+
+    expect(tools.slice(6).map((tool) => tool.name)).toEqual([
+      "puppygraph_list_catalogs",
+      "puppygraph_create_catalog",
+      "puppygraph_test_catalog",
+      "puppygraph_list_tables",
+      "puppygraph_describe_table",
+      "puppygraph_schema_template",
+      "puppygraph_validate_schema",
+      "puppygraph_upload_schema",
+    ]);
   });
 
   it.each([

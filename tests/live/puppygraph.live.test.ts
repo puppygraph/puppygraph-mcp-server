@@ -51,7 +51,7 @@ describeLive("live PuppyGraph MCP stdio compatibility", () => {
 
   it("lists the 1.0.0 tools and executes both query languages", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual([
+    expect(tools.slice(0, 6).map((tool) => tool.name)).toEqual([
       "puppygraph_query",
       "puppygraph_schema",
       "puppygraph_status",

@@ -1,6 +1,7 @@
 import { Neo4jConfig } from '../clients/neo4j.js';
 import { GremlinConfig } from '../clients/gremlin.js';
 import { SchemaConfig } from './schema.js';
+import { RestConfig } from '../clients/rest.js';
 
 /**
  * Complete configuration for the PuppyGraph MCP server
@@ -51,5 +52,32 @@ export function loadConfig(): PuppyGraphConfig {
       username: process.env.PUPPYGRAPH_SCHEMA_USERNAME || "puppygraph",
       password: process.env.PUPPYGRAPH_SCHEMA_PASSWORD || "puppygraph123"
     }
+  };
+}
+
+/**
+ * Loads the HTTP API configuration used by the catalog and schema tools.
+ *
+ * - PUPPYGRAPH_HTTP_URL: base URL of the PuppyGraph HTTP API. Defaults to the
+ *   origin of PUPPYGRAPH_SCHEMA_URL, then http://localhost:8081.
+ * - Credentials are the schema API ones (PUPPYGRAPH_SCHEMA_USERNAME/PASSWORD).
+ */
+export function loadRestConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): RestConfig {
+  let url = environment.PUPPYGRAPH_HTTP_URL || "";
+  if (!url && environment.PUPPYGRAPH_SCHEMA_URL) {
+    try {
+      url = new URL(environment.PUPPYGRAPH_SCHEMA_URL).origin;
+    } catch {
+      // Keep the invalid value so requests fail with a configuration error,
+      // rather than silently going to a PuppyGraph on localhost.
+      url = environment.PUPPYGRAPH_SCHEMA_URL;
+    }
+  }
+  return {
+    url: url || "http://localhost:8081",
+    username: environment.PUPPYGRAPH_SCHEMA_USERNAME || "puppygraph",
+    password: environment.PUPPYGRAPH_SCHEMA_PASSWORD || "puppygraph123",
   };
 }
