@@ -158,6 +158,21 @@ async function probe(
   return result;
 }
 
+// Integers past 2^53 (e.g. BIGINT ids) come back as strings, so the agent
+// sees the exact value.
+function exactInteger(digits: string): number | string {
+  const value = Number(digits);
+  return Number.isSafeInteger(value) ? value : digits;
+}
+
+function parseRow(row: string): unknown {
+  return JSON.parse(
+    row.replace(/"(?:[^"\\]|\\.)*"|(?<![\d.eE+-])-?\d{16,}(?![.\deE])/g, (token) =>
+      token.startsWith('"') || Number.isSafeInteger(Number(token)) ? token : `"${token}"`,
+    ),
+  );
+}
+
 async function listCatalogNames(rest: PuppyGraphRestLike): Promise<any[]> {
   const body = await call(rest, "GET", "/ui-api/catalog", "list catalogs");
   return Array.isArray(body?.catalogs) ? body.catalogs : [];
@@ -557,7 +572,7 @@ export function registerSetupTools(
           SAMPLE_TIMEOUT_MS,
         );
         const columns: string[] = Array.isArray(body?.columns) ? body.columns : [];
-        const rows = (Array.isArray(body?.row_json) ? body.row_json : []).map((row: string) => JSON.parse(row));
+        const rows = (Array.isArray(body?.row_json) ? body.row_json : []).map(parseRow);
         return { catalog, database, table, columns, rows, truncated: body?.truncated === true };
       },
     ),
@@ -602,7 +617,7 @@ export function registerSetupTools(
           { catalog, database, table },
           PROFILE_TIMEOUT_MS,
         );
-        return { catalog, database, table, row_count: Number(body?.row_count), approximate: body?.is_approximate === true };
+        return { catalog, database, table, row_count: exactInteger(String(body?.row_count)), approximate: body?.is_approximate === true };
       },
     ),
   );

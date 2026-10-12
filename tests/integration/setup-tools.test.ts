@@ -698,7 +698,7 @@ describe("data probing tools", () => {
       "POST /ui-api/catalog/probe/sample-rows": () =>
         json(200, {
           columns: ["account_id", "name"],
-          row_json: ['[1,"alice"]', "[2,null]"],
+          row_json: ['[1,"alice"]', '[9007199254740993,"x\\"12345678901234567890",1.12345678901234567,1e-12345678901234567]'],
           truncated: true,
           ok: true,
           error_message: "",
@@ -712,7 +712,7 @@ describe("data probing tools", () => {
     expect(body).toEqual({
       ...accounts,
       columns: ["account_id", "name"],
-      rows: [[1, "alice"], [2, null]],
+      rows: [[1, "alice"], ["9007199254740993", 'x"12345678901234567890', 1.12345678901234567, 0]],
       truncated: true,
     });
     expect(rest.called("POST", "/ui-api/catalog/probe/sample-rows")[0].options.body).toEqual({ ...accounts, limit: 2 });
@@ -766,6 +766,17 @@ describe("data probing tools", () => {
     expect(isError).toBe(true);
     expect(body.error_type).toBe("NOT_SUPPORTED");
     expect(body.error).toContain("unverified");
+  });
+
+  it("returns a row count beyond 2^53 exactly", async () => {
+    await connect(new FakeRest(baseRoutes({
+      "POST /ui-api/catalog/probe/row-count": () =>
+        json(200, { row_count: "9007199254740993", is_approximate: false, ok: true, error_message: "" }),
+    })));
+
+    const { body } = await callTool("puppygraph_table_row_count", accounts);
+
+    expect(body.row_count).toBe("9007199254740993");
   });
 
   it("reports an unknown catalog as NOT_FOUND, not as an old PuppyGraph", async () => {
