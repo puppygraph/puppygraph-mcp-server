@@ -94,9 +94,11 @@ export function schemaSkeleton(value: unknown) {
   };
 }
 
-function closest(name: string, candidates: string[], limit = 5): string[] {
+function closest(name: string, candidates: unknown[], limit = 5): string[] {
   const lower = name.toLowerCase();
-  const scored = candidates.map((candidate) => {
+  // An installed schema can hold malformed elements without a label.
+  const named = candidates.filter((candidate): candidate is string => typeof candidate === "string" && candidate !== "");
+  const scored = named.map((candidate) => {
     const other = candidate.toLowerCase();
     const score = other === lower ? 0 : other.includes(lower) || lower.includes(other) ? 1 : 2 + Math.abs(other.length - lower.length);
     return { candidate, score };
@@ -567,7 +569,7 @@ export function registerSchemaTools(
   const find = (list: any[], label: string, kind: "node" | "edge") => {
     const index = list.findIndex((element) => element?.label === label);
     if (index < 0) {
-      const labels = list.map((element) => element?.label);
+      const labels = list.map((element) => element?.label).filter((value): value is string => typeof value === "string" && value !== "");
       throw new SetupError(
         "NOT_FOUND",
         `No ${kind} labelled '${label}' in the installed schema.${labels.length ? ` Closest: ${closest(label, labels).join(", ")}.` : ` The schema has no ${kind}s.`}`,

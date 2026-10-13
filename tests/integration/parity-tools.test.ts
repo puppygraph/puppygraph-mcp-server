@@ -264,6 +264,19 @@ describe("create_catalog guidance", () => {
     expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
   });
 
+  it("rejects a required field set to null", async () => {
+    const { rest } = puppygraph();
+    await connect(rest);
+    const { body } = await callTool("puppygraph_create_catalog", {
+      name: "lake",
+      type: "iceberg",
+      options: { icebergMetastoreType: "rest", restUri: null, restWarehouse: "s3://lake/wh", storageType: "from-metastore" },
+    });
+    expect(body.error_type).toBe("INVALID_INPUT");
+    expect(body.error).toContain("missing restUri");
+    expect(rest.called("POST", "/ui-api/catalog")).toHaveLength(0);
+  });
+
   it("rejects a required select set to an empty string", async () => {
     const { rest } = puppygraph();
     await connect(rest);
@@ -432,6 +445,16 @@ describe("schema navigation", () => {
     const missing = await callTool("puppygraph_get_schema_element", { label: "order" });
     expect(missing.body.error_type).toBe("NOT_FOUND");
     expect(missing.body.error).toContain("Order");
+  });
+
+  it("answers NOT_FOUND, not a crash, when the installed schema has an element without a label", async () => {
+    const malformed = { node: [customer, { ...order, label: undefined }], edge: [{ ...placed, label: undefined }] };
+    await connect(puppygraph({ schema: malformed }).rest);
+    const element = await callTool("puppygraph_get_schema_element", { label: "Ordr" });
+    expect(element.body.error_type).toBe("NOT_FOUND");
+    expect(element.body.error).toContain("Closest: Customer");
+    const removal = await callTool("puppygraph_remove_node", { label: "Ordr" });
+    expect(removal.body.error_type).toBe("NOT_FOUND");
   });
 
   it("returns a skeleton instead of a very large schema", async () => {

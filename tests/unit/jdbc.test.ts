@@ -13,6 +13,7 @@ describe("jdbc host helpers", () => {
     ["jdbc:mysql://user:pw@localhost:3306/db", "localhost"],
     ["jdbc:sqlserver://localhost:1433;databaseName=db", "localhost"],
     ["jdbc:sqlserver://localhost;databaseName=db", "localhost"],
+    ["jdbc:sqlserver://localhost\\SQLEXPRESS;databaseName=db", "localhost"],
     ["jdbc:oracle:thin:@localhost:1521/XE", "localhost"],
     ["jdbc:oracle:thin:@//localhost:1521/XE", "localhost"],
     ["jdbc:postgresql://[::1]:5432/bank", "[::1]"],
@@ -24,6 +25,13 @@ describe("jdbc host helpers", () => {
   it("returns null for URIs without a host", () => {
     expect(jdbcHost("jdbc:duckdb:/data/graph.duckdb")).toBeNull();
     expect(jdbcHost("postgresql://localhost/db")).toBeNull();
+  });
+
+  it("treats a SQL Server named instance on localhost as loopback", () => {
+    expect(isLoopbackJdbcUri("jdbc:sqlserver://localhost\\SQLEXPRESS;databaseName=db")).toBe(true);
+    expect(dockerHostJdbcUri("jdbc:sqlserver://localhost\\SQLEXPRESS;databaseName=db")).toBe(
+      "jdbc:sqlserver://host.docker.internal\\SQLEXPRESS;databaseName=db",
+    );
   });
 
   it("recognises loopback hosts only", () => {

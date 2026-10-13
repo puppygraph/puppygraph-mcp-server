@@ -161,7 +161,7 @@ export function checkCatalogValues(type: string, values: Record<string, unknown>
       (conditional !== undefined && conditional.values.includes(effective(conditional.name)));
     if (!required) return false;
     const value = effective(name);
-    if (value === "") return true;
+    if (value === "" || value === null) return true;
     // An absent field with a default is the server's plain case.
     const fallback = field.defaultValue;
     return value === undefined && (fallback === undefined || fallback === "");

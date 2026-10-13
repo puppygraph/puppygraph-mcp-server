@@ -40,7 +40,8 @@ function hostSpan(uri: string): HostSpan | null {
     if (end < 0) return null;
     end += 1;
   } else {
-    const rest = uri.slice(start).search(/[:/;?,)]/);
+    // A backslash ends the host too: SQL Server names an instance as host\INSTANCE.
+    const rest = uri.slice(start).search(/[:/;?,)\\]/);
     end = rest < 0 ? uri.length : start + rest;
   }
   const host = uri.slice(start, end);
