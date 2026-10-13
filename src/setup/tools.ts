@@ -1,14 +1,28 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { PuppyGraphRestLike } from "../clients/rest.js";
 import {
-  RestConnectionError,
-  type PuppyGraphRestLike,
-  type RestResponse,
-} from "../clients/rest.js";
-import { createRequestId, errorCategory } from "../utils/logging.js";
+  call,
+  errorFromResponse,
+  listCatalogNames,
+  liveVersion,
+  requireCatalog,
+  runTool,
+  SetupError,
+  textResult,
+} from "./common.js";
+import {
+  dockerHostJdbcUri,
+  isLoopbackJdbcUri,
+  LOCALHOST_HINT,
+  looksUnreachable,
+} from "../utils/jdbc.js";
 import { collectSecrets, maskSecrets, MASK, scrubText } from "../utils/redact.js";
+import { catalogSpec, catalogTypes, checkCatalogValues, isKnownCatalogType } from "./catalog-spec.js";
+import { guideMarkdown } from "../guide.js";
+import { type CypherRunner, type GremlinRunner, registerSchemaTools, schemaDiff, waitUntilQueryable, withSchemaLock } from "./schema-tools.js";
 import { SCHEMA_TEMPLATE, SCHEMA_TEMPLATE_NOTES } from "./template.js";
-import { responseError, UpstreamHttpError, validateSchema } from "./validate.js";
+import { responseError, validateSchema } from "./validate.js";
 
 /**
  * Tools that take an agent from an empty PuppyGraph to a queryable graph:
@@ -17,30 +31,6 @@ import { responseError, UpstreamHttpError, validateSchema } from "./validate.js"
  * Write tools (create_catalog, upload_schema) are not registered in read-only
  * mode, and refuse if called anyway.
  */
-
-export type SetupErrorCode =
-  | "READ_ONLY"
-  | "INVALID_INPUT"
-  | "NOT_FOUND"
-  | "ALREADY_EXISTS"
-  | "VALIDATION_FAILED"
-  | "REPLACE_REQUIRED"
-  | "AUTHENTICATION_FAILED"
-  | "PERMISSION_DENIED"
-  | "CONNECTION_FAILED"
-  | "TIMEOUT"
-  | "UPSTREAM_ERROR";
-
-class SetupError extends Error {
-  constructor(
-    readonly code: SetupErrorCode,
-    message: string,
-    readonly details: Record<string, unknown> = {},
-  ) {
-    super(message);
-    this.name = "SetupError";
-  }
-}
 
 // Driver classes for the common JDBC catalog types, as the PuppyGraph UI
 // fills them in.
@@ -63,69 +53,151 @@ const JDBC_DRIVERS: Record<string, string> = {
 };
 
 const CATALOG_TYPES_HINT =
-  "JDBC: postgresql, mysql8, mysql5, mariadb, sqlserver, redshift, snowflake, duckdb, clickhouse, oracle, trino, presto, vertica, singlestore, alloydb. Others (pass their fields in options): iceberg, hive, hudi, deltalake, bigquery, databricks, mongodb, elasticsearch, spanner";
+  "JDBC: postgresql, mysql8, mysql5, mariadb, sqlserver, redshift, snowflake, duckdb, clickhouse, oracle, trino, presto, vertica, singlestore, alloydb. Others (pass their fields in options): iceberg, hive, hudi, deltalake, bigquery, databricks, mongodbAtlas, elasticsearch, spanner. puppygraph_catalog_spec gives every type's exact field names";
+
+// PuppyGraph doesn't ship the MySQL drivers; the catalog form asks for a
+// download URL. These are the official connectors on Maven Central.
+const MYSQL_DRIVER_URLS: Record<string, string> = {
+  mysql8: "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar",
+  mysql5: "https://repo1.maven.org/maven2/mysql/mysql-connector-java/5.1.49/mysql-connector-java-5.1.49.jar",
+};
+
+/**
+ * What to change for the catalog errors agents run into most, in the spirit
+ * of PuppyGraph AI's catalog result explanations. Returns undefined when
+ * there is nothing more specific to say.
+ */
+export function catalogErrorHint(message: string, type: string, jdbcUri: string | undefined): Record<string, unknown> | undefined {
+  if (/locate the driver|driverUrl/i.test(message)) {
+    return {
+      hint: `PuppyGraph doesn't include the driver for '${type}'. Pass driver_url with a URL PuppyGraph can download the driver jar from${MYSQL_DRIVER_URLS[type] ? `, e.g. the official connector: ${MYSQL_DRIVER_URLS[type]}` : ""}.`,
+      ...(MYSQL_DRIVER_URLS[type] ? { suggested_driver_url: MYSQL_DRIVER_URLS[type] } : {}),
+    };
+  }
+  if (/public key is not available|allowPublicKeyRetrieval/i.test(message) && jdbcUri) {
+    const separator = jdbcUri.includes("?") ? "&" : "?";
+    return {
+      hint: "MySQL 8's default authentication needs the server's public key over a non-TLS connection. Add allowPublicKeyRetrieval=true (and useSSL=false if the server has no TLS) to the JDBC URI.",
+      suggested_jdbc_uri: /allowPublicKeyRetrieval=/i.test(jdbcUri)
+        ? jdbcUri.replace(/allowPublicKeyRetrieval=[^&;]*/i, "allowPublicKeyRetrieval=true")
+        : `${jdbcUri}${separator}allowPublicKeyRetrieval=true&useSSL=false`,
+    };
+  }
+  if (/unknown (metastoreType|storageType|catalogType)|metastoreType:|is required/i.test(message)) {
+    return { hint: `The catalog fields are incomplete or misnamed. Call puppygraph_catalog_spec with type '${type}' for the exact field names, and pass them in options.` };
+  }
+  if (/authentication failed|access denied|password|login failed|unauthorized|invalid credentials/i.test(message)) {
+    return {
+      hint: "The data source rejected the login. Check the username and the authentication settings. Don't ask the user to paste a password into the conversation: have them put it in an environment variable of the MCP server (PUPPYGRAPH_SECRET_...) and pass password_env.",
+    };
+  }
+  if (/duckdb/i.test(message) && /does not exist|cannot open|no such file/i.test(message)) {
+    return {
+      hint: "The DuckDB path is read inside the PuppyGraph server (container), not on this machine. Mount the .duckdb file into the container (e.g. docker run -v /host/dir:/files ...) and use jdbc:duckdb:/files/<name>.duckdb. To load CSV or Parquet files, create tables or views in that DuckDB file first. Files on S3 need an Iceberg, Delta Lake or Hive catalog instead: DuckDB S3 settings aren't saved in the file.",
+    };
+  }
+  if (/in-memory database in read-only mode/i.test(message)) {
+    return { hint: "PuppyGraph opens DuckDB read-only, so jdbc:duckdb: (in memory) can't work. Point jdbc_uri at a .duckdb file inside the PuppyGraph container." };
+  }
+  return undefined;
+}
 
 const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const CATALOG_TIMEOUT_MS = 5 * 60_000;
+// PuppyGraph gives up on a probe after 1 minute (sample), 5 minutes (profile,
+// row count) or 10 minutes (join check); wait a little longer than that.
+const SAMPLE_TIMEOUT_MS = 90_000;
+const PROFILE_TIMEOUT_MS = 6 * 60_000;
+const JOIN_TIMEOUT_MS = 11 * 60_000;
 
-function textResult(value: unknown, isError = false) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-    ...(isError ? { isError: true } : {}),
-  };
+/**
+ * A connection failure to a loopback JDBC host, as PuppyGraph in Docker
+ * reports it: say why and suggest the URI to retry with. Other errors pass
+ * through unchanged.
+ */
+function withLocalhostHint(error: SetupError, jdbcUri: string | undefined): SetupError {
+  if (!jdbcUri || !isLoopbackJdbcUri(jdbcUri) || !looksUnreachable(error.message)) {
+    return error;
+  }
+  return new SetupError("HOST_UNREACHABLE_FROM_PUPPYGRAPH", error.message, {
+    ...error.details,
+    hint: LOCALHOST_HINT,
+    suggested_jdbc_uri: dockerHostJdbcUri(jdbcUri),
+  });
 }
 
-function errorFromResponse(
-  response: RestResponse,
-  action: string,
-  secrets: readonly string[],
-): SetupError {
-  const message = responseError(response.body, secrets);
-  if (response.status === 401) {
-    return new SetupError(
-      "AUTHENTICATION_FAILED",
-      `PuppyGraph rejected the HTTP API credentials while trying to ${action}. Check PUPPYGRAPH_SCHEMA_USERNAME / PUPPYGRAPH_SCHEMA_PASSWORD in the MCP server configuration.`,
-    );
-  }
-  if (response.status === 403) {
-    return new SetupError("PERMISSION_DENIED", `Not allowed to ${action}: ${message}`);
-  }
-  if (response.status === 404) {
-    return new SetupError(
-      "UPSTREAM_ERROR",
-      `This PuppyGraph server has no endpoint to ${action} (HTTP 404). These tools need PuppyGraph 1.x.`,
-    );
-  }
-  return new SetupError("UPSTREAM_ERROR", `Failed to ${action}: ${message}`);
-}
-
-async function call(
+async function probe(
   rest: PuppyGraphRestLike,
-  method: "GET" | "POST",
-  path: string,
+  route: string,
   action: string,
-  options: { query?: Record<string, string>; body?: unknown; timeoutMs?: number } = {},
-  secrets: readonly string[] = [],
+  body: Record<string, unknown>,
+  timeoutMs: number,
 ): Promise<any> {
-  const response = await rest.request(method, path, options);
-  if (!response.ok) {
-    throw errorFromResponse(response, action, secrets);
+  const response = await rest.request("POST", `/ui-api/catalog/probe/${route}`, { body, timeoutMs });
+  const result = response.body as any;
+  const code = result?.code;
+  if (response.status === 404 && code !== "catalog_not_found") {
+    throw new SetupError(
+      "NOT_SUPPORTED",
+      "This PuppyGraph version can't probe source data (the probe endpoints came after 1.14), so none of the probe tools (puppygraph_sample_table, puppygraph_profile_column, puppygraph_table_row_count, puppygraph_check_join) work here; don't call them again. Choose ids and edges from the column names and types in puppygraph_describe_table and tell the user that the keys and joins are unverified until checked; after uploading, run puppygraph_check_edges, which checks every edge against the data on any PuppyGraph 1.x.",
+    );
   }
-  return response.body;
+  if (!response.ok) {
+    const message = responseError(response.body, []);
+    if (code === "catalog_not_found") {
+      throw new SetupError("NOT_FOUND", `${message}. List the catalogs with puppygraph_list_catalogs.`);
+    }
+    if (code === "invalid_request") {
+      throw new SetupError("INVALID_INPUT", message);
+    }
+    if (response.status === 403 && code === undefined) {
+      throw new SetupError(
+        "PERMISSION_DENIED",
+        `Not allowed to ${action}: ${message}. Probing source data needs the DATA:read permission; without it, choose ids and edges from column names and types and tell the user they are unverified.`,
+      );
+    }
+    throw errorFromResponse(response, action, []);
+  }
+  if (result?.ok === false) {
+    throw new SetupError("UPSTREAM_ERROR", `Failed to ${action}: ${responseError(result.error_message || "no details", [])}`);
+  }
+  return result;
 }
 
-async function listCatalogNames(rest: PuppyGraphRestLike): Promise<any[]> {
-  const body = await call(rest, "GET", "/ui-api/catalog", "list catalogs");
-  return Array.isArray(body?.catalogs) ? body.catalogs : [];
+// Integers past 2^53 (e.g. BIGINT ids) come back as strings, so the agent
+// sees the exact value.
+function exactInteger(digits: string): number | string {
+  const value = Number(digits);
+  return Number.isSafeInteger(value) ? value : digits;
 }
 
-async function requireCatalog(rest: PuppyGraphRestLike, name: string): Promise<void> {
-  const catalogs = await listCatalogNames(rest);
-  if (!catalogs.some((catalog) => catalog?.name === name)) {
-    const known = catalogs.map((catalog) => catalog?.name).filter(Boolean);
+function parseRow(row: string): unknown {
+  return JSON.parse(
+    row.replace(/"(?:[^"\\]|\\.)*"|(?<![\d.eE+-])-?\d{16,}(?![.\deE])/g, (token) =>
+      token.startsWith('"') || Number.isSafeInteger(Number(token)) ? token : `"${token}"`,
+    ),
+  );
+}
+
+function closestNames(name: string, candidates: string[], limit = 5): string[] {
+  const lower = name.toLowerCase();
+  const score = (candidate: string) => {
+    const other = candidate.toLowerCase();
+    return other === lower ? 0 : other.includes(lower) || lower.includes(other) ? 1 : 2 + Math.abs(other.length - lower.length);
+  };
+  return [...candidates].sort((a, b) => score(a) - score(b)).slice(0, limit);
+}
+
+/** PuppyGraph lists no tables for an unknown database; say so instead. */
+async function requireDatabase(rest: PuppyGraphRestLike, catalog: string, database: string): Promise<void> {
+  const body = await call(rest, "GET", "/ui-api/database", `list databases of '${catalog}'`, {
+    query: { catalogName: catalog },
+  });
+  const databases: string[] = Array.isArray(body?.database) ? body.database : [];
+  if (!databases.includes(database)) {
     throw new SetupError(
       "NOT_FOUND",
-      `Catalog '${name}' not found. Registered catalogs: ${known.length ? known.join(", ") : "none"}. Create it with puppygraph_create_catalog.`,
+      `Database '${database}' not found in catalog '${catalog}'. Databases: ${databases.length ? closestNames(database, databases, 20).join(", ") : "none"}. Names are case-sensitive.`,
     );
   }
 }
@@ -158,18 +230,6 @@ function liveSchemaSummary(schema: any) {
     edge_labels: edges.map((edge: any) => edge?.label),
     empty: nodes.length === 0 && edges.length === 0,
   };
-}
-
-async function liveVersion(rest: PuppyGraphRestLike): Promise<number | null> {
-  const response = await rest.request("GET", "/ui-api/schema/versions", {
-    query: { limit: "50" },
-  });
-  const versions = (response.body as any)?.versions;
-  if (!response.ok || !Array.isArray(versions)) {
-    return null;
-  }
-  const live = versions.find((version: any) => version?.isLive) || versions[0];
-  return typeof live?.version === "number" ? live.version : null;
 }
 
 // password_env / secret_env may only name variables with this prefix, or
@@ -207,54 +267,19 @@ function readEnvSecret(environment: NodeJS.ProcessEnv, variable: string): string
   return value;
 }
 
-type Handler<A> = (args: A, log: (message: string) => void) => Promise<unknown>;
-
-function runTool<A>(name: string, handler: Handler<A>, secretsOf: (args: A) => string[] = () => []) {
-  return async (args: A) => {
-    const requestId = createRequestId();
-    const log = (message: string) =>
-      console.error(`Tool ${name} request_id=${requestId} ${message}`);
-    let secrets: string[] = [];
-    try {
-      secrets = secretsOf(args);
-      log("started");
-      const value = await handler(args, log);
-      log("completed");
-      return textResult(maskSecrets(value, secrets));
-    } catch (error: any) {
-      let code: SetupErrorCode = "UPSTREAM_ERROR";
-      let message = "Unexpected error";
-      let details: Record<string, unknown> = {};
-      if (error instanceof UpstreamHttpError) {
-        error = errorFromResponse(error.response, error.action, secrets);
-      }
-      if (error instanceof SetupError) {
-        ({ code, message, details } = error);
-      } else if (error instanceof RestConnectionError) {
-        code = error.timedOut ? "TIMEOUT" : "CONNECTION_FAILED";
-        message = `${error.message}. Check that PuppyGraph is running and PUPPYGRAPH_HTTP_URL points at its web port (8081 by default).`;
-      }
-      log(`failed error_type=${code} error_category=${errorCategory(error)}`);
-      return textResult(
-        maskSecrets(
-          { ok: false, error: scrubText(message, secrets), error_type: code, ...details },
-          secrets,
-        ),
-        true,
-      );
-    }
-  };
-}
-
 export interface SetupToolOptions {
   readOnly: boolean;
   environment: NodeJS.ProcessEnv;
+  /** Runs a Cypher query (for puppygraph_check_edges and post-upload checks). */
+  query?: CypherRunner;
+  /** Runs a Gremlin traversal (puppygraph_check_edges counts edge rows with it). */
+  gremlin?: GremlinRunner;
 }
 
 export function registerSetupTools(
   server: McpServer,
   rest: PuppyGraphRestLike,
-  { readOnly, environment }: SetupToolOptions,
+  { readOnly, environment, query, gremlin }: SetupToolOptions,
 ): void {
   const refuseIfReadOnly = (tool: string) => {
     if (readOnly) {
@@ -264,6 +289,43 @@ export function registerSetupTools(
       );
     }
   };
+
+  server.registerTool(
+    "puppygraph_guide",
+    {
+      description:
+        "How to use this PuppyGraph MCP server: everything it does is a puppygraph_* tool. Returns the steps to query a graph, and to build one from a database, warehouse, lake or files (catalog → tables → keys → schema → check), with the rules for correct keys, types and edges. Call it first if you haven't used these tools before.",
+      inputSchema: {},
+    },
+    runTool("puppygraph_guide", async () => ({ guide: guideMarkdown(readOnly) })),
+  );
+
+  server.registerTool(
+    "puppygraph_catalog_spec",
+    {
+      description:
+        "Describe the catalog types PuppyGraph supports (omit type), or one type's connection fields: exact names, defaults, allowed values, which fields apply when (e.g. icebergMetastoreType=rest shows restUri and restWarehouse), and its docs link. Use the names in puppygraph_create_catalog's options. Read-only: it connects to nothing.",
+      inputSchema: {
+        type: z.string().min(1).optional().describe("Catalog type, e.g. iceberg, deltalake, hive, bigquery, snowflake, mysql8"),
+      },
+    },
+    runTool("puppygraph_catalog_spec", async ({ type }: { type?: string }) => {
+      if (!type) {
+        return { catalog_types: catalogTypes(), next: "Call again with type to get its fields." };
+      }
+      if (!isKnownCatalogType(type)) {
+        throw new SetupError(
+          "INVALID_INPUT",
+          `Unknown catalog type '${type}'. Types: ${catalogTypes().map((entry) => entry.type).join(", ")}.`,
+        );
+      }
+      return {
+        ...catalogSpec(type),
+        how_to_pass:
+          "In puppygraph_create_catalog, fields marked pass_as go in that parameter; every other field goes in options under its exact name. Put sensitive fields in secret_env (field → MCP server environment variable) rather than in options, so they stay out of the conversation. Only the fields under the values you choose apply (see shown_when).",
+      };
+    }),
+  );
 
   server.registerTool(
     "puppygraph_list_catalogs",
@@ -287,6 +349,10 @@ export function registerSetupTools(
         inputSchema: {
           name: z.string().min(1).describe("Catalog name, used as 'catalog' in the schema"),
           type: z.string().min(1).describe(`Catalog type. ${CATALOG_TYPES_HINT}`),
+          driver_url: z
+            .string()
+            .optional()
+            .describe("URL PuppyGraph downloads the JDBC driver jar from. Required for mysql8/mysql5 (PuppyGraph doesn't ship the MySQL driver), e.g. https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"),
           jdbc_uri: z
             .string()
             .optional()
@@ -304,11 +370,11 @@ export function registerSetupTools(
           options: z
             .record(z.any())
             .optional()
-            .describe("Extra catalog fields as the PuppyGraph catalog form takes them, for non-JDBC types (e.g. metastore and storage settings for iceberg)"),
+            .describe("Extra catalog fields, named exactly as puppygraph_catalog_spec lists them for the type (e.g. for iceberg on an Iceberg REST catalog: icebergMetastoreType, restUri, restWarehouse, storageType, ...). Put secrets in secret_env, not here."),
           secret_env: z
             .record(z.string())
             .optional()
-            .describe("Map of option field name to MCP server environment variable name (same rule as password_env), for secrets in options (e.g. {\"secretKey\": \"PUPPYGRAPH_SECRET_S3_KEY\"})"),
+            .describe("Map of option field name to MCP server environment variable name (same rule as password_env), for secrets in options (e.g. {\"storageSecretKey\": \"PUPPYGRAPH_SECRET_S3_KEY\"})"),
         },
       },
       runTool(
@@ -332,17 +398,57 @@ export function registerSetupTools(
           if (isJdbc && !args.jdbc_uri && !("jdbcUri" in options)) {
             throw new SetupError("INVALID_INPUT", `jdbc_uri is required for catalog type '${args.type}'.`);
           }
+          if (MYSQL_DRIVER_URLS[args.type] && !args.driver_url && !("driverUrl" in options)) {
+            throw new SetupError(
+              "INVALID_INPUT",
+              `PuppyGraph doesn't include the MySQL driver: pass driver_url, e.g. the official connector ${MYSQL_DRIVER_URLS[args.type]}. Nothing was created.`,
+              { suggested_driver_url: MYSQL_DRIVER_URLS[args.type] },
+            );
+          }
+          // Check the options against the catalog form before PuppyGraph
+          // answers with something like "unknown metastoreType:".
+          const optionWarnings: string[] = [];
+          if (isKnownCatalogType(args.type)) {
+            // The values that will actually be sent, under their form names.
+            const values: Record<string, unknown> = { ...options };
+            if (args.jdbc_uri !== undefined) values.jdbcUri = args.jdbc_uri;
+            if (args.username !== undefined) values.jdbcUsername = args.username;
+            if (password !== undefined) values.jdbcPassword = password;
+            if (args.driver_url !== undefined) values.driverUrl = args.driver_url;
+            if (isJdbc && (args.driver_class || JDBC_DRIVERS[args.type])) values.driverClass = args.driver_class || JDBC_DRIVERS[args.type];
+            const check = checkCatalogValues(args.type, values);
+            const invalid = Object.entries(check.invalid_options).map(([field, allowed]) => `${field} must be one of ${allowed.map(String).join(", ")}`);
+            const missing = check.missing;
+            if (missing.length > 0 || invalid.length > 0) {
+              throw new SetupError(
+                "INVALID_INPUT",
+                `The '${args.type}' catalog settings are incomplete: ${[
+                  ...(missing.length ? [`missing ${missing.join(", ")}`] : []),
+                  ...invalid,
+                ].join("; ")}${check.unknown.length ? `; the catalog form has no field ${check.unknown.join(", ")}` : ""}. Nothing was created. Call puppygraph_catalog_spec with type '${args.type}' for the exact field names, and pass them in options (secrets in secret_env).`,
+              );
+            }
+            if (check.unknown.length > 0) {
+              optionWarnings.push(`The catalog form has no field ${check.unknown.join(", ")}; PuppyGraph may ignore it. Field names are in puppygraph_catalog_spec.`);
+            }
+          }
           const catalog: Record<string, unknown> = {
             ...options,
             catalogName: args.name,
             catalogType: args.type,
           };
+          // The catalog form picks BigQuery's client with bigqueryDriverType;
+          // PuppyGraph reads connectivity (the web UI translates it the same way).
+          if (args.type === "bigquery" && options.bigqueryDriverType === "adbc" && catalog.connectivity === undefined) {
+            catalog.connectivity = "adbc";
+          }
           if (isJdbc) {
             if (args.jdbc_uri !== undefined) catalog.jdbcUri = args.jdbc_uri;
             if (args.username !== undefined) catalog.jdbcUsername = args.username;
             if (password !== undefined) catalog.jdbcPassword = password;
             const driver = args.driver_class || JDBC_DRIVERS[args.type];
             if (driver) catalog.driverClass = driver;
+            if (args.driver_url !== undefined) catalog.driverUrl = args.driver_url;
           } else if (args.username !== undefined || password !== undefined) {
             throw new SetupError(
               "INVALID_INPUT",
@@ -363,12 +469,21 @@ export function registerSetupTools(
             timeoutMs: CATALOG_TIMEOUT_MS,
           });
           if (!response.ok) {
-            const error = errorFromResponse(response, `create catalog '${args.name}'`, secrets);
+            const error = withLocalhostHint(
+              errorFromResponse(response, `create catalog '${args.name}'`, secrets),
+              (catalog.jdbcUri as string | undefined) ?? undefined,
+            );
             if (/already exists/i.test(error.message)) {
               throw new SetupError(
                 "ALREADY_EXISTS",
                 `A catalog named '${args.name}' already exists. Use it as is (check it with puppygraph_test_catalog), or pick another name.`,
               );
+            }
+            const hint = error.code === "UPSTREAM_ERROR"
+              ? catalogErrorHint(error.message, args.type, catalog.jdbcUri as string | undefined)
+              : undefined;
+            if (hint) {
+              throw new SetupError(error.code, error.message, { ...error.details, ...maskSecrets(hint, secrets) });
             }
             throw error;
           }
@@ -385,6 +500,7 @@ export function registerSetupTools(
                 : { name: args.name, type: args.type, jdbcUri: args.jdbc_uri },
               secrets,
             ),
+            ...(optionWarnings.length ? { warnings: optionWarnings } : {}),
             next: `List its tables with puppygraph_list_tables (catalog '${args.name}').`,
           };
         },
@@ -452,7 +568,11 @@ export function registerSetupTools(
           `list tables of '${catalog}.${database}' (check the database name with puppygraph_list_tables without database)`,
           { query: { catalogName: catalog, databaseName: database } },
         );
-        return { catalog, database, tables: body?.table ?? [] };
+        const tables = body?.table ?? [];
+        if (Array.isArray(tables) && tables.length === 0) {
+          await requireDatabase(rest, catalog, database);
+        }
+        return { catalog, database, tables };
       },
     ),
   );
@@ -461,7 +581,7 @@ export function registerSetupTools(
     "puppygraph_describe_table",
     {
       description:
-        "List the columns of a table in a catalog: name, source type, and schemaType (the PuppyGraph type to use for it in the graph schema).",
+        "List the columns of a table in a catalog: name, source type, and schemaType. Declare each column in the graph schema with its schemaType exactly as given (e.g. LONG, DECIMAL(12,2), ARRAY<STRING>): PuppyGraph rejects any other type. Columns with schemaType UNKNOWN can't be mapped; leave them out.",
       inputSchema: {
         catalog: z.string().min(1).describe("Catalog name"),
         database: z.string().min(1).describe("Database or schema name"),
@@ -479,7 +599,152 @@ export function registerSetupTools(
           `describe '${catalog}.${database}.${table}' (check the names with puppygraph_list_tables)`,
           { query: { catalogName: catalog, databaseName: database, tableName: table } },
         );
-        return { catalog, database, table, columns: body?.column ?? [] };
+        const columns: any[] = Array.isArray(body?.column) ? body.column : [];
+        if (columns.length === 0) {
+          // PuppyGraph answers an unknown table with no columns.
+          await requireDatabase(rest, catalog, database);
+          const listed = await call(rest, "GET", "/ui-api/table", `list tables of '${catalog}.${database}'`, {
+            query: { catalogName: catalog, databaseName: database },
+          });
+          const tables: string[] = Array.isArray(listed?.table) ? listed.table : [];
+          if (!tables.includes(table)) {
+            throw new SetupError(
+              "NOT_FOUND",
+              `Table '${table}' not found in '${catalog}.${database}'.${tables.length ? ` Closest: ${closestNames(table, tables).join(", ")}.` : " The database has no tables."} Names are case-sensitive.`,
+            );
+          }
+        }
+        const unsupported = columns
+          .filter((column) => String(column?.schemaType ?? "").toUpperCase() === "UNKNOWN")
+          .map((column) => column?.name);
+        return {
+          catalog,
+          database,
+          table,
+          columns,
+          ...(unsupported.length
+            ? { unsupported_columns: unsupported, note: "PuppyGraph can't map these columns' source type (e.g. Postgres ENUM); leave them out of the schema." }
+            : {}),
+        };
+      },
+    ),
+  );
+
+  const tableInput = {
+    catalog: z.string().min(1).describe("Catalog name"),
+    database: z.string().min(1).describe("Database or schema name"),
+    table: z.string().min(1).describe("Table name"),
+  };
+
+  server.registerTool(
+    "puppygraph_sample_table",
+    {
+      description:
+        "Return a few real rows of a table (default 10, at most 100), to tell id-shaped columns from free text and spot enums before mapping the table. The rows go into the conversation, so ask for only the columns you need.",
+      inputSchema: {
+        ...tableInput,
+        columns: z.array(z.string().min(1)).optional().describe("Columns to return; all columns when omitted"),
+        limit: z.number().int().min(1).max(100).optional().describe("Number of rows, default 10"),
+      },
+    },
+    runTool(
+      "puppygraph_sample_table",
+      async (args: { catalog: string; database: string; table: string; columns?: string[]; limit?: number }) => {
+        const { catalog, database, table } = args;
+        const body = await probe(
+          rest,
+          "sample-rows",
+          `sample '${catalog}.${database}.${table}'`,
+          { catalog, database, table, ...(args.columns ? { columns: args.columns } : {}), ...(args.limit ? { limit: args.limit } : {}) },
+          SAMPLE_TIMEOUT_MS,
+        );
+        const columns: string[] = Array.isArray(body?.columns) ? body.columns : [];
+        const rows = (Array.isArray(body?.row_json) ? body.row_json : []).map(parseRow);
+        return { catalog, database, table, columns, rows, truncated: body?.truncated === true };
+      },
+    ),
+  );
+
+  server.registerTool(
+    "puppygraph_profile_column",
+    {
+      description:
+        "Profile one column from its data: total, null and distinct counts, cardinality_class (unique, high, medium, low or binary) and looks_like hints (pk_candidate, fk_candidate, enum, measure, free_text, timestamp, json), plus up to 20 sample values and min/max unless the server returns counts only. A node id should be a pk_candidate: unique and never null. Use this to decide which column is a table's id, which ones reference other tables, and which are attributes. It scans the whole column, so it can take minutes on large tables.",
+      inputSchema: { ...tableInput, column: z.string().min(1).describe("Column name") },
+    },
+    runTool(
+      "puppygraph_profile_column",
+      async ({ catalog, database, table, column }: { catalog: string; database: string; table: string; column: string }) => {
+        const profile = await probe(
+          rest,
+          "column-profile",
+          `profile '${catalog}.${database}.${table}.${column}'`,
+          { catalog, database, table, column },
+          PROFILE_TIMEOUT_MS,
+        );
+        return { catalog, database, table, column, ...profile };
+      },
+    ),
+  );
+
+  server.registerTool(
+    "puppygraph_table_row_count",
+    {
+      description:
+        "Count the rows of a table. Helps tell entity tables (nodes) from event and link tables (often edges), and judge how long profiling will take.",
+      inputSchema: tableInput,
+    },
+    runTool(
+      "puppygraph_table_row_count",
+      async ({ catalog, database, table }: { catalog: string; database: string; table: string }) => {
+        const body = await probe(
+          rest,
+          "row-count",
+          `count the rows of '${catalog}.${database}.${table}'`,
+          { catalog, database, table },
+          PROFILE_TIMEOUT_MS,
+        );
+        return { catalog, database, table, row_count: exactInteger(String(body?.row_count)), approximate: body?.is_approximate === true };
+      },
+    ),
+  );
+
+  const columnRef = z.object({
+    catalog: z.string().min(1),
+    database: z.string().min(1),
+    table: z.string().min(1),
+    column: z.string().min(1),
+  });
+
+  server.registerTool(
+    "puppygraph_check_join",
+    {
+      description:
+        "Check from the data whether a column references another table: samples distinct values of from.column and counts how many exist in to.column. Without to.column, tries the type-compatible columns of to.table and ranks them. Returns candidates with hit_rate (share of sampled values found), from_keys and to_keys (distinct counts), and up to 5 values that were not found (unless the server returns counts only). Check every edge this way before putting it in a schema; never present a join you did not check as verified. A hit_rate near 1.0 is a foreign key; below about 0.95 it is a soft reference, so tell the user the evidence. Independent checks can run in parallel. It can take minutes on large tables.",
+      inputSchema: {
+        from: columnRef.describe("The referencing column, e.g. orders.customer_id"),
+        to: columnRef
+          .extend({ column: z.string().min(1).optional() })
+          .describe("The referenced table and, if known, its key column, e.g. customers.id"),
+        max_candidates: z.number().int().min(1).max(25).optional().describe("Without to.column: how many candidate columns to return, default 5"),
+      },
+    },
+    runTool(
+      "puppygraph_check_join",
+      async (args: {
+        from: { catalog: string; database: string; table: string; column: string };
+        to: { catalog: string; database: string; table: string; column?: string };
+        max_candidates?: number;
+      }) => {
+        const { from, to } = args;
+        const body = await probe(
+          rest,
+          "join-check",
+          `check '${from.table}.${from.column}' against '${to.table}${to.column ? `.${to.column}` : ""}'`,
+          { from, to, ...(args.max_candidates ? { max_candidates: args.max_candidates } : {}) },
+          JOIN_TIMEOUT_MS,
+        );
+        return { from, to, candidates: Array.isArray(body?.candidates) ? body.candidates : [] };
       },
     ),
   );
@@ -541,7 +806,7 @@ export function registerSetupTools(
       },
       runTool(
         "puppygraph_upload_schema",
-        async ({ schema, replace }: { schema: unknown; replace?: boolean }, log) => {
+        async ({ schema, replace }: { schema: unknown; replace?: boolean }, log) => withSchemaLock(rest, async () => {
           refuseIfReadOnly("puppygraph_upload_schema");
           const validation = await validateSchema(rest, schema);
           if (!validation.valid) {
@@ -609,19 +874,25 @@ export function registerSetupTools(
               { warnings: validation.warnings },
             );
           }
+          const changes = validation.schema ? schemaDiff(live, validation.schema) : undefined;
+          const ready = changes ? await waitUntilQueryable(query, validation.schema, changes) : { ready: true };
           return {
             ok: true,
             version: body.version ?? null,
             previous_version: previousVersion,
             message: body.message ?? "Schema uploaded",
+            ...(changes ? { changes } : {}),
+            ...ready,
             warnings: [...validation.warnings, ...(Array.isArray(body.warnings) ? body.warnings : [])],
-            next: "Query the graph with puppygraph_query, e.g. MATCH (n) RETURN labels(n), count(*).",
+            next: "Check that every edge connects real nodes with puppygraph_check_edges, then query the graph with puppygraph_query.",
           };
-        },
+        }),
         ({ schema }: { schema: unknown }) => secretsOfSchema(schema),
       ),
     );
   }
+
+  registerSchemaTools(server, rest, { readOnly, query, gremlin });
 }
 
 /**

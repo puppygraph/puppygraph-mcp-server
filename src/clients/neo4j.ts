@@ -78,14 +78,34 @@ export class Neo4jClient {
   }
 
   async executeQuery(cypher: string, parameters: Record<string, any> = {}): Promise<any[]> {
+    return (await this.executeQueryWithWarnings(cypher, parameters)).records;
+  }
+
+  /**
+   * Runs a query and also returns PuppyGraph's query warnings (Bolt
+   * notifications, e.g. an unknown label or property), which PuppyGraph AI
+   * shows its agent too. timeoutMs, when given, is sent as the transaction
+   * timeout.
+   */
+  async executeQueryWithWarnings(
+    cypher: string,
+    parameters: Record<string, any> = {},
+    timeoutMs?: number,
+  ): Promise<{ records: any[]; warnings: string[] }> {
     if (!this.connected || !this.driver) {
       throw new Error('Not connected to Neo4j endpoint');
     }
     
     const session = this.getSession();
     try {
-      const result = await session.run(cypher, parameters);
-      return result.records.map(record => {
+      const result = timeoutMs
+        ? await session.run(cypher, parameters, { timeout: timeoutMs })
+        : await session.run(cypher, parameters);
+      const notifications: any[] = (result.summary as any)?.notifications ?? [];
+      const warnings = notifications
+        .map((notification) => [notification?.title, notification?.description].filter(Boolean).join(": "))
+        .filter((text) => text !== "");
+      const records = result.records.map(record => {
         const obj: Record<string, any> = {};
         
         // Convert symbol keys to strings if needed
@@ -100,6 +120,7 @@ export class Neo4jClient {
         
         return obj;
       });
+      return { records, warnings };
     } finally {
       await session.close();
     }

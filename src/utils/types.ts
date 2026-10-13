@@ -10,6 +10,8 @@ export interface QueryResult<T> {
     execution_time: number;
     /** Number of rows/records returned */
     row_count: number;
+    /** PuppyGraph query warnings (unknown labels, properties, ...) */
+    warnings?: string[];
     /** Error message if there was an error */
     error?: string;
     /** Type of error that occurred */

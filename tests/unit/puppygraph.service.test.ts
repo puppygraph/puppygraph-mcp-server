@@ -132,7 +132,7 @@ describe('PuppyGraphService', () => {
     it('should execute a Cypher query successfully', async () => {
       mockNeo4jClient = {
         isConnected: vi.fn().mockReturnValue(true),
-        executeQuery: vi.fn().mockResolvedValue([{ node: { id: 1, name: 'Test' } }]),
+        executeQueryWithWarnings: vi.fn().mockResolvedValue({ records: [{ node: { id: 1, name: 'Test' } }], warnings: [] }),
         connect: vi.fn().mockResolvedValue(true),
         getConnectionError: vi.fn().mockReturnValue(null),
       };
@@ -144,7 +144,7 @@ describe('PuppyGraphService', () => {
         query: 'MATCH (n) RETURN n LIMIT 1',
       });
 
-      expect(mockNeo4jClient.executeQuery).toHaveBeenCalled();
+      expect(mockNeo4jClient.executeQueryWithWarnings).toHaveBeenCalled();
       expect(result).toEqual({
         data: [{ node: { id: 1, name: 'Test' } }],
         metadata: {
@@ -154,13 +154,33 @@ describe('PuppyGraphService', () => {
       });
     });
 
+    it('should return PuppyGraph query warnings and pass the timeout', async () => {
+      mockNeo4jClient = {
+        isConnected: vi.fn().mockReturnValue(true),
+        executeQueryWithWarnings: vi.fn().mockResolvedValue({
+          records: [],
+          warnings: ['PuppyGraphWarning: label Custmer does not exist'],
+        }),
+        connect: vi.fn().mockResolvedValue(true),
+        getConnectionError: vi.fn().mockReturnValue(null),
+      };
+
+      // @ts-ignore - accessing private property for testing
+      service.neo4jClient = mockNeo4jClient;
+
+      const result = await service.executeCypher({ query: 'MATCH (n:Custmer) RETURN n', timeoutMs: 5000 });
+
+      expect(mockNeo4jClient.executeQueryWithWarnings).toHaveBeenCalledWith('MATCH (n:Custmer) RETURN n', undefined, 5000);
+      expect(result.metadata.warnings).toEqual(['PuppyGraphWarning: label Custmer does not exist']);
+    });
+
     it('should log correlation metadata without query or parameter values', async () => {
       const querySecret = 'private-query-literal';
       const parameterSecret = 'private-parameter-value';
       const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       mockNeo4jClient = {
         isConnected: vi.fn().mockReturnValue(true),
-        executeQuery: vi.fn().mockResolvedValue([{ count: 1 }]),
+        executeQueryWithWarnings: vi.fn().mockResolvedValue({ records: [{ count: 1 }], warnings: [] }),
         connect: vi.fn().mockResolvedValue(true),
         getConnectionError: vi.fn().mockReturnValue(null),
       };

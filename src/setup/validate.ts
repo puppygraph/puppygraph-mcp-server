@@ -32,13 +32,35 @@ export class UpstreamHttpError extends Error {
   }
 }
 
+/** PuppyGraph answers this until its leader is elected, for a minute or so after start. */
+export function isStartingMessage(message: string): boolean {
+  return /no healthy leader/i.test(message);
+}
+
+/** PuppyGraph is still starting: says nothing about the schema. */
+export class ServerStartingError extends Error {
+  constructor() {
+    super("PuppyGraph is still starting");
+    this.name = "ServerStartingError";
+  }
+}
+
 function throwIfAccessDenied(response: RestResponse, action: string): void {
+  if (!response.ok && isStartingMessage(responseError(response.body, []))) {
+    throw new ServerStartingError();
+  }
   if (response.status === 401 || response.status === 403) {
     throw new UpstreamHttpError(response, action);
   }
 }
 
 type Entity = { kind: "Node" | "Edge"; value: Record<string, any> };
+
+/** A column of a source table, as /ui-api/column describes it. */
+interface SourceColumn {
+  name: string;
+  schemaType?: string;
+}
 
 const MAX_LISTED_COLUMNS = 40;
 
@@ -149,7 +171,7 @@ export async function validateSchema(
   ];
   checkLabels(nodes, edges, result);
 
-  const columnCache = new Map<string, Promise<string[] | string>>();
+  const columnCache = new Map<string, Promise<SourceColumn[] | string>>();
   for (const entity of entities) {
     await checkEntity(entity, {
       rest,
@@ -161,6 +183,7 @@ export async function validateSchema(
       nodeLabels: new Set(nodes.map((node) => node?.label)),
     });
   }
+  checkEdgeKeys(nodes, edges, result);
 
   result.valid = result.problems.length === 0;
   return result;
@@ -221,7 +244,7 @@ interface CheckContext {
   result: ValidationResult;
   registered: Set<string> | null;
   embedded: Set<string>;
-  columnCache: Map<string, Promise<string[] | string>>;
+  columnCache: Map<string, Promise<SourceColumn[] | string>>;
   secrets: readonly string[];
   nodeLabels: Set<unknown>;
 }
@@ -349,12 +372,20 @@ async function checkEntity(entity: Entity, ctx: CheckContext): Promise<void> {
     return;
   }
 
-  const columns = await tableColumns(ctx, catalog, schema, table);
-  if (typeof columns === "string") {
-    problems.push(`${where}: cannot read table '${catalog}.${schema}.${table}': ${columns}`);
+  const sourceColumns = await tableColumns(ctx, catalog, schema, table);
+  if (typeof sourceColumns === "string") {
+    problems.push(`${where}: cannot read table '${catalog}.${schema}.${table}': ${sourceColumns}`);
     return;
   }
   ctx.result.tablesChecked = ctx.columnCache.size;
+  if (sourceColumns.length === 0) {
+    // PuppyGraph answers an unknown table with an empty column list.
+    problems.push(
+      `${where}: table '${catalog}.${schema}.${table}' was not found (or has no columns). Check the database and table names with puppygraph_list_tables; names are case-sensitive.`,
+    );
+    return;
+  }
+  const columns = sourceColumns.map((column) => column.name);
 
   const available = new Set(columns);
   const aliases = new Set<string>();
@@ -381,6 +412,132 @@ async function checkEntity(entity: Entity, ctx: CheckContext): Promise<void> {
       `${where}: mapped source field '${name}' not found in remote table '${catalog}.${schema}.${table}'. Available columns: ${listed}${columns.length > MAX_LISTED_COLUMNS ? ", ..." : ""}`,
     );
   }
+  checkTypes(where, value, mapped, sourceColumns, `${catalog}.${schema}.${table}`, problems);
+}
+
+/**
+ * PuppyGraph only accepts a declared type equal to the source column's
+ * schemaType, ignoring case and spaces: Int for a BIGINT column, Double for
+ * DECIMAL(12,2) or DECIMAL(14,2) for DECIMAL(12,2) are all rejected on upload
+ * (checked on 1.14.0 and main), so say so before uploading.
+ */
+function checkTypes(
+  where: string,
+  entity: Record<string, any>,
+  mapped: any[],
+  columns: SourceColumn[],
+  tableName: string,
+  problems: string[],
+): void {
+  const declaredType = new Map<string, unknown>();
+  for (const list of ["id", "attribute", "fromKey", "toKey"]) {
+    for (const column of Array.isArray(entity[list]) ? entity[list] : []) {
+      if (typeof column?.name === "string") declaredType.set(column.name, column.type);
+    }
+  }
+  const checked = new Set<string>();
+  for (const field of mapped) {
+    const sourceName = field?.sourceFieldName;
+    const target = field?.targetFieldName;
+    // A target mapped twice is already a problem; check only its first mapping.
+    if (typeof sourceName !== "string" || typeof target !== "string" || checked.has(target)) continue;
+    checked.add(target);
+    const column =
+      columns.find((candidate) => candidate.name === sourceName) ??
+      columns.find((candidate) => candidate.name.toLowerCase() === sourceName.toLowerCase());
+    const declared = declaredType.get(target);
+    if (!column?.schemaType || typeof declared !== "string") continue;
+    if (normalizeType(column.schemaType) === "UNKNOWN") {
+      problems.push(
+        `${where}: column '${sourceName}' of '${tableName}' has a source type PuppyGraph can't map (schemaType UNKNOWN, e.g. a Postgres ENUM). Leave it out of the schema.`,
+      );
+    } else if (normalizeType(declared) !== normalizeType(column.schemaType)) {
+      problems.push(
+        `${where}: '${target}' is declared as ${declared}, but column '${sourceName}' of '${tableName}' has schemaType ${column.schemaType}. Declare it as ${column.schemaType}: PuppyGraph rejects any other type (e.g. Long for INT, Double for DECIMAL).`,
+      );
+    }
+  }
+}
+
+export function normalizeType(type: string): string {
+  return type.replace(/\s+/g, "").toUpperCase();
+}
+
+function sourceOfTarget(entity: Record<string, any>, target: string): string | undefined {
+  const mapped = entity?.dataSourceGroup?.externalDataSource?.mappedField;
+  const field = Array.isArray(mapped) ? mapped.find((item: any) => item?.targetFieldName === target) : undefined;
+  return field?.sourceFieldName;
+}
+
+function sourceTable(entity: Record<string, any>): string | undefined {
+  const source = entity?.dataSourceGroup?.externalDataSource;
+  return source?.enabled && source.catalog && source.schema && source.table
+    ? JSON.stringify([source.catalog, source.schema, source.table])
+    : undefined;
+}
+
+/**
+ * Edge keys must line up with the ids of the nodes they point at: as many
+ * columns, of the same types. PuppyGraph accepts a mismatch and the edge then
+ * matches no node (or the wrong ones). Also warns when an edge read from a
+ * node's own table keys that node by a column other than its id, which is
+ * what a swapped from/to looks like.
+ */
+function checkEdgeKeys(nodes: Record<string, any>[], edges: Record<string, any>[], result: ValidationResult): void {
+  const byLabel = new Map(nodes.map((node) => [node?.label, node]));
+  for (const edge of edges) {
+    const where = `Edge '${edge.label ?? "?"}'`;
+    const sides = [
+      { keys: "fromKey", label: edge.fromNodeLabel, role: "source" },
+      { keys: "toKey", label: edge.toNodeLabel, role: "target" },
+    ] as const;
+    const idMatches: boolean[] = [];
+    const sameTable: boolean[] = [];
+    for (const side of sides) {
+      const node = byLabel.get(side.label);
+      const keys: any[] = Array.isArray(edge[side.keys]) ? edge[side.keys] : [];
+      const ids: any[] = Array.isArray(node?.id) ? node.id : [];
+      if (!node || keys.length === 0 || ids.length === 0) {
+        idMatches.push(true);
+        sameTable.push(false);
+        continue;
+      }
+      if (keys.length !== ids.length) {
+        result.problems.push(
+          `${where}: ${side.keys} has ${keys.length} column(s) but node '${side.label}' has an id of ${ids.length} column(s) (${ids.map((id) => id?.name).join(", ")}). Give ${side.keys} one column per id column, in the same order.`,
+        );
+      } else {
+        keys.forEach((key, index) => {
+          const id = ids[index];
+          if (typeof key?.type === "string" && typeof id?.type === "string" && normalizeType(key.type) !== normalizeType(id.type)) {
+            result.problems.push(
+              `${where}: ${side.keys} column '${key.name}' is ${key.type} but node '${side.label}' id column '${id.name}' is ${id.type}. A key of another type matches no '${side.label}' node: check that the column really holds '${side.label}' ids.`,
+            );
+          }
+        });
+      }
+      const edgeTable = sourceTable(edge);
+      // A key-count mismatch is already a problem; don't also guess at direction.
+      const isSame = keys.length === ids.length && edgeTable !== undefined && edgeTable === sourceTable(node);
+      sameTable.push(isSame);
+      if (isSame) {
+        const keySources = keys.map((key) => sourceOfTarget(edge, key?.name));
+        const idSources = ids.map((id) => sourceOfTarget(node, id?.name));
+        idMatches.push(keySources.every((source, index) => source !== undefined && source === idSources[index]));
+      } else {
+        idMatches.push(true);
+      }
+    }
+    const selfEdge = edge.fromNodeLabel === edge.toNodeLabel;
+    const suspicious = selfEdge
+      ? sameTable[0] && sameTable[1] && !idMatches[0] && !idMatches[1]
+      : sides.some((_side, index) => sameTable[index] && !idMatches[index]);
+    if (suspicious) {
+      result.warnings.push(
+        `${where}: it reads the table of '${selfEdge ? edge.fromNodeLabel : sides.find((_s, i) => sameTable[i] && !idMatches[i])!.label}', but keys that node by a column other than its id. If the edge points the other way, swap fromNodeLabel/toNodeLabel with fromKey/toKey. Check the direction with puppygraph_check_edges after uploading.`,
+      );
+    }
+  }
 }
 
 function tableColumns(
@@ -388,7 +545,7 @@ function tableColumns(
   catalog: string,
   schema: string,
   table: string,
-): Promise<string[] | string> {
+): Promise<SourceColumn[] | string> {
   const key = JSON.stringify([catalog, schema, table]);
   let pending = ctx.columnCache.get(key);
   if (!pending) {
@@ -400,7 +557,12 @@ function tableColumns(
         throwIfAccessDenied(response, `read the columns of '${catalog}.${schema}.${table}'`);
         const body = response.body as any;
         if (response.ok && body && Array.isArray(body.column)) {
-          return names(body.column);
+          return (body.column as any[])
+            .filter((column) => typeof column?.name === "string" && column.name !== "")
+            .map((column) => ({
+              name: column.name as string,
+              schemaType: typeof column.schemaType === "string" ? column.schemaType : undefined,
+            }));
         }
         return `${responseError(response.body, ctx.secrets)} (check the schema and table names with puppygraph_list_tables)`;
       });

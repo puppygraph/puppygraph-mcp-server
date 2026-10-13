@@ -8,6 +8,7 @@ export default defineConfig({
       'tests/integration/mcp-server.test.ts',
       'tests/integration/unreachable.test.ts',
       'tests/integration/setup-tools.test.ts',
+      'tests/integration/parity-tools.test.ts',
     ],
     environment: 'node',
     globals: true,

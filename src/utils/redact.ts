@@ -11,13 +11,19 @@ export const MASK = "******";
 
 // Field names that hold credentials in catalog definitions: jdbc.password,
 // jdbcPassword, accessKey/secretKey, client_secret, sasToken, token,
-// accountKey/serviceAccountKey(Json), ... Account-key names must end there,
-// so path or id fields such as serviceAccountKeyFile are left alone.
+// accountKey/serviceAccountKey(Json), sharedKey, snowflakeKeyFilePWD,
+// bigqueryAdbcKeyJson, metastoreClientId, ... (every field the catalog form
+// marks sensitive). Account-key names must end there, so path or id fields
+// such as serviceAccountKeyFile are left alone.
 const SECRET_KEY_PATTERN =
-  /pass(word)?$|secret|token|credential|private.?key|access.?key|api.?key|sas$|account.?key(.?json)?$/i;
+  /pass(word)?$|pwd$|secret|token|credential|private.?key|access.?key|api.?key|shared.?key|key.?json$|sas$|account.?key(.?json)?$|^metastoreClientId$/i;
+// Settings whose names mention a credential but hold a URL, a path, a file
+// name or a mode, not the credential itself (e.g. snowflakeOAuthTokenRequestUrl,
+// restCatalogVendedCredentialsMode, useDefaultCredentialsProviderChain).
+const NOT_SECRET_PATTERN = /(url|uri|path|file|forward|mode|providerchain|type|enabled)$/i;
 
 export function isSecretKey(key: string): boolean {
-  return SECRET_KEY_PATTERN.test(key);
+  return SECRET_KEY_PATTERN.test(key) && !NOT_SECRET_PATTERN.test(key);
 }
 
 /**

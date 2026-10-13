@@ -96,6 +96,24 @@ describeLive("live catalog and schema setup through MCP", () => {
     const described = await tool("puppygraph_describe_table", { catalog, database: "public", table: "accounts" });
     expect(described.body.columns.map((column: any) => column.name)).toEqual(["account_id", "name"]);
 
+    const profiled = await tool("puppygraph_profile_column", { catalog, database: "public", table: "accounts", column: "account_id" });
+    if (profiled.body.error_type === "NOT_SUPPORTED") {
+      console.warn("This PuppyGraph has no data probe endpoints; skipping the probe checks.");
+    } else {
+      expect(profiled.body).toMatchObject({ total_count: 3, distinct_count: 3, cardinality_class: "unique" });
+      expect(profiled.body.looks_like).toContain("pk_candidate");
+      const counted = await tool("puppygraph_table_row_count", { catalog, database: "public", table: "account_devices" });
+      expect(counted.body.row_count).toBe(3);
+      const sampled = await tool("puppygraph_sample_table", { catalog, database: "public", table: "accounts", columns: ["name"], limit: 2 });
+      expect(sampled.body).toMatchObject({ columns: ["name"], truncated: true });
+      expect(sampled.body.rows).toHaveLength(2);
+      const joined = await tool("puppygraph_check_join", {
+        from: { catalog, database: "public", table: "account_devices", column: "account_id" },
+        to: { catalog, database: "public", table: "accounts", column: "account_id" },
+      });
+      expect(joined.body.candidates[0]).toMatchObject({ to: "accounts.account_id", hit_rate: 1 });
+    }
+
     const template = (await tool("puppygraph_schema_template")).body.template;
     const schema = JSON.parse(JSON.stringify(template).replaceAll("my_catalog", catalog));
 
